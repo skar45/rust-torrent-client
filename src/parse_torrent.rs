@@ -21,7 +21,7 @@ pub mod torrent_info {
     }
 
     impl FromBencode for TorrentMetadata {
-        fn decode_bencode_object(object: Object) -> Result<Self, bendy::decoding::Error>
+        fn decode_bencode_object(object: Object) -> Result<Self, Error>
         where
             Self: Sized,
         {

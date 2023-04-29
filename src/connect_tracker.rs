@@ -68,7 +68,7 @@ pub mod tracker {
     pub async fn get_data(
         request: &mut AnnounceURL,
         hash: Vec<u8>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
         let url = &request.url;
         let info_hash = byte_serialize(&hash).collect::<String>();
@@ -97,10 +97,8 @@ pub mod tracker {
         println!("MAKING A REQUEST");
         println!("URL: {}", url);
 
-        let response = &client.get(url).send().await?;
+        let response = &client.get(url).send().await?.bytes().await?;
 
-        println!("Request result: {:?}", response);
-
-        Ok(())
+        Ok(response.to_vec())
     }
 }
