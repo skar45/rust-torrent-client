@@ -1,6 +1,7 @@
 pub mod torrent_info {
     pub use bendy::decoding::{Error, FromBencode, Object, ResultExt};
     use sha1_smol::Sha1;
+
     #[derive(Debug)]
     pub struct TorrentMetadata {
         pub pieces: Vec<u8>,

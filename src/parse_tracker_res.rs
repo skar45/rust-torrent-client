@@ -65,11 +65,7 @@ pub mod peers {
                             }
                         }
                     }
-                    _ => {
-                        return Err(Error::unexpected_field(
-                            "[TrackerData]: excessive fields",
-                        ))
-                    }
+                    _ => return Err(Error::unexpected_field("[TrackerData]: excessive fields")),
                 }
             }
 
