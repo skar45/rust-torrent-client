@@ -1,10 +1,11 @@
 pub mod tracker {
     use reqwest;
-    use std::borrow::Borrow;
     pub use std::fmt::Display;
+    use std::{borrow::Borrow, error::Error, io::Write, net::TcpStream, u8};
     use url::form_urlencoded::byte_serialize;
 
     const LISTENING_PORT: i32 = 8000;
+
     enum Event {
         Started,
         Stopped,
@@ -29,6 +30,16 @@ pub mod tracker {
         downloaded: i32,
         left: i32,
         event: Event,
+    }
+
+    pub struct Handshake {
+        // length of the pstr, always 0x13
+        pstrlen: i32,
+        // name of the protocol: `BitTorrent protocol`
+        pstr: String,
+        reserved_bytes: [u8; 8],
+        info_hash: [u8; 20],
+        peer_id: String,
     }
 
     /**
@@ -67,7 +78,7 @@ pub mod tracker {
      */
     pub async fn get_data(
         request: &mut AnnounceURL,
-        hash: Vec<u8>,
+        hash: &Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
         let url = &request.url;
@@ -100,5 +111,34 @@ pub mod tracker {
         let response = &client.get(url).send().await?.bytes().await?;
 
         Ok(response.to_vec())
+    }
+
+    pub fn handshake_serialize(info_hash: &Vec<u8>, peer_id: &str) -> String {
+        // 0x13 is the length of the message.
+        let protocol_identifier = "x13BitTorrent protocol";
+        let empty_bits = "0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00";
+        let handshake_message = format!(
+            "\\{}\\{}\\{:?}\\{}",
+            protocol_identifier, empty_bits, info_hash, peer_id
+        );
+        println!("handhake message");
+        println!("{}", handshake_message);
+        return handshake_message;
+    }
+
+    pub async fn connect_to_peer(
+        handshake_message: &str,
+        ip: &str,
+        port: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)) {
+            println!("Connected to ip: {}", ip);
+            stream
+                .write_all(handshake_message.as_bytes())
+                .expect("Could not send message!");
+            Ok(())
+        } else {
+            panic!("Couldn't connect to server...");
+        }
     }
 }

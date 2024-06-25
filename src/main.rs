@@ -31,7 +31,7 @@ fn main() {
     let file = std::fs::read(args.torrent).expect("could not read file");
     let torrent_info = TorrentInfo::from_bencode(&file).unwrap();
 
-    let peer_id: String = thread_rng()
+    let client_id: String = thread_rng()
         .sample_iter(&Alphanumeric)
         .take(20)
         .map(char::from)
@@ -39,15 +39,19 @@ fn main() {
 
     let mut req_data = tracker::url_builder(
         torrent_info.announce.clone(),
-        peer_id.to_string(),
+        client_id.to_string(),
         torrent_info.info.length,
     );
 
-    let request = tracker::get_data(&mut req_data, torrent_info.info_hash);
+    let request = tracker::get_data(&mut req_data, &torrent_info.info_hash);
     let rt = Runtime::new().unwrap();
     let tracker_res = rt.block_on(request).unwrap();
-    let peers = PeerList::from_bencode(&tracker_res).unwrap();
-
-    println!("peers: {:#?}", peers);
-    // TODO: connect to the peers
+    let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
+    println!("peers: {:#?}", peer_list);
+    // Connect to the first peer
+    let handshake_msg = tracker::handshake_serialize(&torrent_info.info_hash, &client_id);
+    let first_peer = &peer_list.peers[0];
+    let port_string = &first_peer.port.to_string();
+    let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &first_peer.ip, &port_string);
+    rt.block_on(connect_to_tracker).unwrap();
 }
