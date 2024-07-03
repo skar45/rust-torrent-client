@@ -1,8 +1,15 @@
 pub mod tracker {
-    use reqwest;
     pub use std::fmt::Display;
-    use std::{borrow::Borrow, error::Error, io::Write, net::TcpStream, u8};
+    use reqwest::{self};
+    use std::{
+        borrow::Borrow,
+        error::Error,
+        u8,
+    };
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
     use url::form_urlencoded::byte_serialize;
+
+    use crate::parse_tracker_res::peers::PeerList;
 
     const LISTENING_PORT: i32 = 8000;
 
@@ -32,6 +39,65 @@ pub mod tracker {
         event: Event,
     }
 
+    impl AnnounceURL {
+        pub fn new(url: String, peer_id: String, left: i32) -> AnnounceURL {
+            AnnounceURL {
+                url,
+                peer_id,
+                port: LISTENING_PORT,
+                uploaded: 0,
+                downloaded: 0,
+                left, // TODO: extract the total size of the file
+                event: Event::Started,
+            }
+        }
+    }
+
+    enum MessageId {
+        KeepAlive,
+        Choke,
+        Unchoke,
+        Interested,
+        NotInterested,
+        Have,
+        Bitfield,
+        Request,
+        Piece,
+        Cancel,
+        Port
+    }
+
+    impl MessageId {
+        fn get_id(id: i32) -> MessageId {
+           match id {
+               0 => MessageId::Choke,
+               1 => MessageId::Unchoke,
+               2 => MessageId::Interested,
+               3 => MessageId::Interested,
+               4 => MessageId::NotInterested,
+               5 => MessageId::Have,
+               6 => MessageId::Bitfield,
+               7 => MessageId::Request,
+               8 => MessageId::Piece,
+               9 => MessageId::Cancel,
+               10 => MessageId::Port,
+               _ => MessageId::KeepAlive
+           } 
+        }
+    }
+
+    pub struct Message {
+        length: i32,
+        id: MessageId,
+        payload: Option<Vec<u8>>
+    }
+
+    impl Message {
+        fn byte_serialize(&self) -> Vec<u8> {
+             
+        }
+    }
+
     pub struct Handshake {
         // length of the pstr, always 0x13
         pstrlen: i32,
@@ -41,6 +107,7 @@ pub mod tracker {
         info_hash: [u8; 20],
         peer_id: String,
     }
+
 
     /**
      * Parse url query from key value pairs
@@ -56,21 +123,6 @@ pub mod tracker {
             }
         }
         query_string
-    }
-
-    /**
-     * Torrent state data to be sent to the tracker
-     */
-    pub fn url_builder(url: String, peer_id: String, left: i32) -> AnnounceURL {
-        AnnounceURL {
-            url,
-            peer_id,
-            port: LISTENING_PORT,
-            uploaded: 0,
-            downloaded: 0,
-            left, // TODO: extract the total size of the file
-            event: Event::Started,
-        }
     }
 
     /**
@@ -94,20 +146,6 @@ pub mod tracker {
         ]);
 
         let url = format!("{url}{query}");
-        // let url = Url::parse_with_params(
-        //     &format!("{url}?info_hash={info_hash}"),
-        // &[
-        //     ("peer_id", request.peer_id.to_owned()),
-        //     ("uploaded", request.uploaded.to_string()),
-        //     ("downloaded", request.downloaded.to_string()),
-        //     ("left", request.left.to_string()),
-        //     ("event", request.event.to_string()),
-        // ],
-        // )?;
-
-        println!("MAKING A REQUEST");
-        println!("URL: {}", url);
-
         let response = &client.get(url).send().await?.bytes().await?;
 
         Ok(response.to_vec())
@@ -117,28 +155,37 @@ pub mod tracker {
         // 0x13 is the length of the message.
         let protocol_identifier = "x13BitTorrent protocol";
         let empty_bits = "0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00";
+        let mut hash_string  =  "";
+        for b in info_hash {
+            hash_string = &format!("{}\\{:x}", hash_string, b);
+        }
         let handshake_message = format!(
             "\\{}\\{}\\{:?}\\{}",
-            protocol_identifier, empty_bits, info_hash, peer_id
+            protocol_identifier, empty_bits, hash_string, peer_id
         );
         println!("handhake message");
         println!("{}", handshake_message);
         return handshake_message;
     }
 
+
     pub async fn connect_to_peer(
         handshake_message: &str,
-        ip: &str,
-        port: &str,
-    ) -> Result<(), Box<dyn Error>> {
-        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)) {
-            println!("Connected to ip: {}", ip);
-            stream
-                .write_all(handshake_message.as_bytes())
-                .expect("Could not send message!");
-            Ok(())
-        } else {
-            panic!("Couldn't connect to server...");
+        peer_list: &PeerList,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        for p in peer_list.peers.iter() {
+            if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", p.ip, p.port)).await {
+                println!("Connected to ip: {}", p.ip);
+                stream
+                    .write_all(handshake_message.as_bytes())
+                    .await
+                    .expect("Could not send message!");
+
+                let mut buffer = Vec::new();
+                let m = stream.read_to_end(&mut buffer).await;
+                return Ok(buffer[..m.expect("Could not read response!")].to_vec());
+            }
         }
+        panic!("Could not connect to peer");
     }
 }

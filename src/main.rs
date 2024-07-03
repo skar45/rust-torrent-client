@@ -7,6 +7,7 @@ use crate::parse_torrent::torrent_info::TorrentInfo;
 use crate::parse_tracker_res::peers::PeerList;
 use bendy::decoding::FromBencode;
 use clap::Parser;
+use connect_tracker::tracker::AnnounceURL;
 use rand::{self, distributions::Alphanumeric, thread_rng, Rng};
 use tokio::runtime::Runtime;
 
@@ -37,7 +38,7 @@ fn main() {
         .map(char::from)
         .collect();
 
-    let mut req_data = tracker::url_builder(
+    let mut req_data = AnnounceURL::new(
         torrent_info.announce.clone(),
         client_id.to_string(),
         torrent_info.info.length,
@@ -48,10 +49,11 @@ fn main() {
     let tracker_res = rt.block_on(request).unwrap();
     let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
     println!("peers: {:#?}", peer_list);
-    // Connect to the first peer
     let handshake_msg = tracker::handshake_serialize(&torrent_info.info_hash, &client_id);
-    let first_peer = &peer_list.peers[0];
-    let port_string = &first_peer.port.to_string();
-    let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &first_peer.ip, &port_string);
-    rt.block_on(connect_to_tracker).unwrap();
+    let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &peer_list);
+
+    match rt.block_on(connect_to_tracker) {
+        Ok(_) => {}
+        Err(_) => {}
+    };
 }
