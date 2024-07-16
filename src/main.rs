@@ -14,7 +14,7 @@ use tokio::runtime::Runtime;
 /**
  * TODO
  * - [ ] connect to clients
- * - [ ] download data
+ * - [x] download data
  * - [ ] http error handling
  * - [ ] bencode parsing error handling
  * - [ ] file integrity check

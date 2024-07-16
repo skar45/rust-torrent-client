@@ -1,12 +1,11 @@
 pub mod tracker {
-    pub use std::fmt::Display;
     use reqwest::{self};
-    use std::{
-        borrow::Borrow,
-        error::Error,
-        u8,
+    pub use std::fmt::Display;
+    use std::{borrow::Borrow, error::Error, u8};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
     };
-    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
     use url::form_urlencoded::byte_serialize;
 
     use crate::parse_tracker_res::peers::PeerList;
@@ -64,37 +63,57 @@ pub mod tracker {
         Request,
         Piece,
         Cancel,
-        Port
+        Port,
     }
 
     impl MessageId {
         fn get_id(id: i32) -> MessageId {
-           match id {
-               0 => MessageId::Choke,
-               1 => MessageId::Unchoke,
-               2 => MessageId::Interested,
-               3 => MessageId::Interested,
-               4 => MessageId::NotInterested,
-               5 => MessageId::Have,
-               6 => MessageId::Bitfield,
-               7 => MessageId::Request,
-               8 => MessageId::Piece,
-               9 => MessageId::Cancel,
-               10 => MessageId::Port,
-               _ => MessageId::KeepAlive
-           } 
+            match id {
+                0 => MessageId::Choke,
+                1 => MessageId::Unchoke,
+                2 => MessageId::Interested,
+                3 => MessageId::Interested,
+                4 => MessageId::NotInterested,
+                5 => MessageId::Have,
+                6 => MessageId::Bitfield,
+                7 => MessageId::Request,
+                8 => MessageId::Piece,
+                9 => MessageId::Cancel,
+                10 => MessageId::Port,
+                _ => MessageId::KeepAlive,
+            }
+        }
+
+        fn convert(&self) -> u8 {
+            match &self {
+                MessageId::Choke => 0,
+                MessageId::Unchoke => 1,
+                MessageId::Interested => 2,
+                MessageId::Interested => 3,
+                MessageId::NotInterested => 4,
+                MessageId::Have => 5,
+                MessageId::Bitfield => 6,
+                MessageId::Request => 7,
+                MessageId::Piece => 8,
+                MessageId::Cancel => 9,
+                MessageId::Port => 10,
+                _ => 0,
+            }
         }
     }
 
     pub struct Message {
         length: i32,
         id: MessageId,
-        payload: Option<Vec<u8>>
+        payload: Option<Vec<u8>>,
     }
 
     impl Message {
-        fn byte_serialize(&self) -> Vec<u8> {
-             
+        // Serialize message into bit pattern: <length><id><paid>
+        // length must be big endian
+        fn byte_serialize(&self) -> () {
+            let length = (&self.length >> 16) & (&self.length & 0xFFFF << 16);
+            let id = &self.id.convert();
         }
     }
 
@@ -107,7 +126,6 @@ pub mod tracker {
         info_hash: [u8; 20],
         peer_id: String,
     }
-
 
     /**
      * Parse url query from key value pairs
@@ -155,19 +173,18 @@ pub mod tracker {
         // 0x13 is the length of the message.
         let protocol_identifier = "x13BitTorrent protocol";
         let empty_bits = "0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00";
-        let mut hash_string  =  "";
+        let mut hash_string = String::from("");
         for b in info_hash {
-            hash_string = &format!("{}\\{:x}", hash_string, b);
+            hash_string.push_str(&format!("\\{:#04x}", b));
         }
+        println!("handhake message");
+        println!("{}", hash_string);
         let handshake_message = format!(
-            "\\{}\\{}\\{:?}\\{}",
+            "\\{}\\{}{}{}",
             protocol_identifier, empty_bits, hash_string, peer_id
         );
-        println!("handhake message");
-        println!("{}", handshake_message);
         return handshake_message;
     }
-
 
     pub async fn connect_to_peer(
         handshake_message: &str,
@@ -187,5 +204,23 @@ pub mod tracker {
             }
         }
         panic!("Could not connect to peer");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracker::handshake_serialize;
+
+    #[test]
+    fn test_message_serialize() {
+        let message = handshake_serialize(
+            &vec![
+                255, 12, 45, 0, 1, 2, 3, 10, 9, 21, 78, 123, 231, 34, 122, 99, 56, 100, 255, 34,
+            ],
+            "-TR2940-k8hj0wgej6ch",
+        );
+        let expected_result =  "\\x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0xff\\0x0c\\0x2d\\0x00\\0x01\\0x02\\0x03\\0x0a\\0x09\\0x15\\0x4e\\0x7b\\0xe7\\0x22\\0x7a\\0x63\\0x38\\0x64\\0xff\\0x22-TR2940-k8hj0wgej6ch";
+        assert_eq!(message, expected_result);
     }
 }
