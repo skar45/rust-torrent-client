@@ -1,5 +1,6 @@
 pub mod tracker {
     use reqwest::{self};
+    use core::panicking::panic;
     pub use std::fmt::Display;
     use std::{borrow::Borrow, error::Error, u8};
     use tokio::{
@@ -67,13 +68,12 @@ pub mod tracker {
     }
 
     impl MessageId {
-        fn get_id(id: i32) -> MessageId {
+        fn get_id(id: u8) -> MessageId {
             match id {
                 0 => MessageId::Choke,
                 1 => MessageId::Unchoke,
                 2 => MessageId::Interested,
                 3 => MessageId::Interested,
-                4 => MessageId::NotInterested,
                 5 => MessageId::Have,
                 6 => MessageId::Bitfield,
                 7 => MessageId::Request,
@@ -90,7 +90,6 @@ pub mod tracker {
                 MessageId::Unchoke => 1,
                 MessageId::Interested => 2,
                 MessageId::Interested => 3,
-                MessageId::NotInterested => 4,
                 MessageId::Have => 5,
                 MessageId::Bitfield => 6,
                 MessageId::Request => 7,
@@ -103,28 +102,89 @@ pub mod tracker {
     }
 
     pub struct Message {
-        length: i32,
-        id: MessageId,
+        length: u32,
+        id: Option<MessageId>,
         payload: Option<Vec<u8>>,
     }
 
     impl Message {
-        // Serialize message into bit pattern: <length><id><paid>
-        // length must be big endian
-        fn byte_serialize(&self) -> () {
-            let length = (&self.length >> 16) & (&self.length & 0xFFFF << 16);
-            let id = &self.id.convert();
+        /**
+         * Serialize message into bit pattern: <length><id><payload>.
+         * Length must be big endian.
+         */
+        fn byte_serialize(&self) -> Vec<u8> {
+            match &self.id {
+                None => return vec![0x00, 0x00],
+                Some(id) => {
+                    let length = &self.length.to_be_bytes();
+                    let id = id.convert();
+                    match &self.payload {
+                        None => return vec![0x00, 0x00],
+                        Some(m) => {
+                            let mut ret = vec![id];
+                            ret.append(&mut m.clone());
+                            ret.append(&mut length.to_vec());
+                            return ret;
+                        }
+                    }
+                }
+            }
+        }
+
+        fn read(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+            let length = u32::from_be_bytes(message[0..4].try_into().unwrap_or_else(|_| panic!("Message is less than 4 bytes!")));
+            let id = u8::from(message[5]).try_into().unwrap_or_else(|_| panic!("Message doesn't have the 5th byte!"));
+            if message.len() < (length as usize + 5) {
+                panic!("Message length is less than the encoded length: {}", length);
+            }
+            let payload = message[5..length as usize].to_vec();
+
+            Ok(Message {
+                length,
+                id: Some(MessageId::get_id(id)),
+                payload: Some(payload)
+            })
         }
     }
 
-    pub struct Handshake {
+    pub struct Handshake<'a> {
         // length of the pstr, always 0x13
-        pstrlen: i32,
+        pstrlen: &'a str,
         // name of the protocol: `BitTorrent protocol`
-        pstr: String,
-        reserved_bytes: [u8; 8],
-        info_hash: [u8; 20],
-        peer_id: String,
+        pstr: &'a str,
+        // 8 empty bytes
+        reserved_bytes: &'a str,
+        info_hash: &'a Vec<u8>,
+        peer_id: &'a str,
+    }
+
+    impl<'a> Handshake<'a> {
+        pub fn new(info_hash: &'a Vec<u8>, peer_id: &'a str) -> Self {
+            Handshake {
+                pstrlen: "0x13",
+                pstr: "x13BitTorrent protocol",
+                reserved_bytes: "0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00",
+                info_hash,
+                peer_id,
+            }
+        }
+
+        pub fn serialize(&self) -> String {
+            let mut hash_string = String::from("");
+            for b in self.info_hash {
+                hash_string.push_str(&format!("\\{:#04x}", b));
+            }
+            let handshake_message = format!(
+                "\\{}{}\\{}{}{}",
+                self.pstrlen, self.pstr, self.reserved_bytes, hash_string, self.peer_id
+            );
+            return handshake_message;
+        }
+
+        // pub fn deserialize(message: &str) -> Result<Self, Box<dyn Error>> {
+        // let mut s = message.split("x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00");
+        // s.nth(1).unwrap().split()
+        // }
     }
 
     /**
@@ -149,7 +209,7 @@ pub mod tracker {
     pub async fn get_data(
         request: &mut AnnounceURL,
         hash: &Vec<u8>,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
         let client = reqwest::Client::new();
         let url = &request.url;
         let info_hash = byte_serialize(&hash).collect::<String>();
@@ -167,23 +227,6 @@ pub mod tracker {
         let response = &client.get(url).send().await?.bytes().await?;
 
         Ok(response.to_vec())
-    }
-
-    pub fn handshake_serialize(info_hash: &Vec<u8>, peer_id: &str) -> String {
-        // 0x13 is the length of the message.
-        let protocol_identifier = "x13BitTorrent protocol";
-        let empty_bits = "0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00";
-        let mut hash_string = String::from("");
-        for b in info_hash {
-            hash_string.push_str(&format!("\\{:#04x}", b));
-        }
-        println!("handhake message");
-        println!("{}", hash_string);
-        let handshake_message = format!(
-            "\\{}\\{}{}{}",
-            protocol_identifier, empty_bits, hash_string, peer_id
-        );
-        return handshake_message;
     }
 
     pub async fn connect_to_peer(
@@ -210,16 +253,17 @@ pub mod tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracker::handshake_serialize;
+    use tracker::Handshake;
 
     #[test]
     fn test_message_serialize() {
-        let message = handshake_serialize(
+        let message = Handshake::new(
             &vec![
                 255, 12, 45, 0, 1, 2, 3, 10, 9, 21, 78, 123, 231, 34, 122, 99, 56, 100, 255, 34,
             ],
             "-TR2940-k8hj0wgej6ch",
-        );
+        )
+        .serialize();
         let expected_result =  "\\x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0xff\\0x0c\\0x2d\\0x00\\0x01\\0x02\\0x03\\0x0a\\0x09\\0x15\\0x4e\\0x7b\\0xe7\\0x22\\0x7a\\0x63\\0x38\\0x64\\0xff\\0x22-TR2940-k8hj0wgej6ch";
         assert_eq!(message, expected_result);
     }

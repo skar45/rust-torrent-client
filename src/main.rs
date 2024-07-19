@@ -11,17 +11,6 @@ use connect_tracker::tracker::AnnounceURL;
 use rand::{self, distributions::Alphanumeric, thread_rng, Rng};
 use tokio::runtime::Runtime;
 
-/**
- * TODO
- * - [ ] connect to clients
- * - [x] download data
- * - [ ] http error handling
- * - [ ] bencode parsing error handling
- * - [ ] file integrity check
- * - [ ] Cli error message output
- * - [ ] Unit tests
- */
-
 #[derive(Parser)]
 struct Cli {
     torrent: std::path::PathBuf,
@@ -49,7 +38,7 @@ fn main() {
     let tracker_res = rt.block_on(request).unwrap();
     let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
     println!("peers: {:#?}", peer_list);
-    let handshake_msg = tracker::handshake_serialize(&torrent_info.info_hash, &client_id);
+    let handshake_msg = tracker::Handshake::new(&torrent_info.info_hash, &client_id).serialize();
     let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &peer_list);
 
     match rt.block_on(connect_to_tracker) {
