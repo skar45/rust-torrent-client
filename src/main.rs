@@ -38,7 +38,8 @@ fn main() {
     let tracker_res = rt.block_on(request).unwrap();
     let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
     println!("peers: {:#?}", peer_list);
-    let handshake_msg = tracker::Handshake::new(&torrent_info.info_hash, &client_id).serialize();
+    let handshake_msg =
+        tracker::Handshake::new(torrent_info.info_hash.clone(), &client_id).serialize();
     let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &peer_list);
 
     match rt.block_on(connect_to_tracker) {
