@@ -111,18 +111,21 @@ pub mod tracker {
          * Serialize message into bit pattern: <length><id><payload>.
          * Length must be big endian.
          */
-        fn byte_serialize(&self) -> Vec<u8> {
+        pub fn byte_serialize(&self) -> Vec<u8> {
             match &self.id {
                 None => return vec![0x00, 0x00],
                 Some(id) => {
                     let length = &self.length.to_be_bytes();
                     let id = id.convert();
+                    let mut ret = vec![];
+                    ret.append(&mut length.to_vec());
+                    ret.push(id);
                     match &self.payload {
-                        None => return vec![0x00, 0x00],
+                        None => {
+                            return ret;
+                        },
                         Some(m) => {
-                            let mut ret = vec![id];
                             ret.append(&mut m.clone());
-                            ret.append(&mut length.to_vec());
                             return ret;
                         }
                     }
@@ -130,7 +133,7 @@ pub mod tracker {
             }
         }
 
-        fn read(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        pub fn read(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
             let length = u32::from_be_bytes(
                 message[0..4]
                     .try_into()
@@ -149,6 +152,28 @@ pub mod tracker {
                 id: Some(MessageId::get_id(id)),
                 payload: Some(payload),
             })
+        }
+
+        pub fn check_piece(bitfield: Vec<u8>, index: usize) -> bool {
+            let byte_index = index / 8;
+            let shift = 7 - (index % 8);
+            match bitfield.get(byte_index) {
+                Some(v) => {
+                    return ((v >> shift) & 0x1) != 0;
+                },
+                None => {
+                    return false;
+                }
+            };
+        }
+
+        pub fn set_bitfield(bitfield: &mut Vec<u8>, index: usize) {
+            let byte_index = index / 8;
+            let shift = 7 - (index % 8);
+            if let Some(v) = bitfield.get(byte_index) {
+                let val = v | (0x1 << shift);
+                bitfield[byte_index] = val;
+            };
         }
     }
 
@@ -285,13 +310,13 @@ pub mod tracker {
 mod tests {
     use super::*;
     use tracker::Handshake;
+    use tracker::Message;
 
-    const MESSAGE: &str = "\\0x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0xff\\0x0c\\0x2d\\0x00\\0x01\\0x02\\0x03\\0x0a\\0x09\\0x15\\0x4e\\0x7b\\0xe7\\0x22\\0x7a\\0x63\\0x38\\0x64\\0xff\\0x22-TR2940-k8hj0wgej6ch";
+    const PAYLOAD: &str = "\\0x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0xff\\0x0c\\0x2d\\0x00\\0x01\\0x02\\0x03\\0x0a\\0x09\\0x15\\0x4e\\0x7b\\0xe7\\0x22\\0x7a\\0x63\\0x38\\0x64\\0xff\\0x22-TR2940-k8hj0wgej6ch";
     const PEER_ID: &str = "-TR2940-k8hj0wgej6ch";
 
     #[test]
     fn message_serialize() {
-        let expected_result = MESSAGE;
         let peer_id = PEER_ID;
         let message = Handshake::new(
             vec![
@@ -301,14 +326,31 @@ mod tests {
         )
         .serialize();
         let handshake = Handshake::deserialize(&message);
-        assert_eq!(message, expected_result);
+        assert_eq!(message, PAYLOAD);
     }
 
     #[test]
     fn message_deserialize() {
-        let expected_result = MESSAGE;
         let peer_id = PEER_ID;
-        let handshake = Handshake::deserialize(expected_result).unwrap();
+        let handshake = Handshake::deserialize(PAYLOAD).unwrap();
         assert_eq!(handshake.get_peer_id(), peer_id);
+    }
+
+    #[test]
+    fn bitfield_check() {
+        assert!(!Message::check_piece(vec![0xff, 0xff], 16));
+        assert!(Message::check_piece(vec![0x00, 0x80], 8) );
+        assert!(!Message::check_piece(vec![0xff, 0xfe], 15));
+    }
+
+    #[test]
+    fn bitfield_set() {
+        let mut bitfield = vec![0x7f, 0xfe, 0x00];
+        Message::set_bitfield(&mut bitfield, 0);
+        assert_eq!(bitfield[0], 0xff);
+        Message::set_bitfield(&mut bitfield, 15);
+        assert_eq!(bitfield[1], 0xff);
+        Message::set_bitfield(&mut bitfield, 22);
+        assert_eq!(bitfield[2], 0x02);
     }
 }
