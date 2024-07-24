@@ -123,7 +123,7 @@ pub mod tracker {
                     match &self.payload {
                         None => {
                             return ret;
-                        },
+                        }
                         Some(m) => {
                             ret.append(&mut m.clone());
                             return ret;
@@ -152,28 +152,6 @@ pub mod tracker {
                 id: Some(MessageId::get_id(id)),
                 payload: Some(payload),
             })
-        }
-
-        pub fn check_piece(bitfield: Vec<u8>, index: usize) -> bool {
-            let byte_index = index / 8;
-            let shift = 7 - (index % 8);
-            match bitfield.get(byte_index) {
-                Some(v) => {
-                    return ((v >> shift) & 0x1) != 0;
-                },
-                None => {
-                    return false;
-                }
-            };
-        }
-
-        pub fn set_bitfield(bitfield: &mut Vec<u8>, index: usize) {
-            let byte_index = index / 8;
-            let shift = 7 - (index % 8);
-            if let Some(v) = bitfield.get(byte_index) {
-                let val = v | (0x1 << shift);
-                bitfield[byte_index] = val;
-            };
         }
     }
 
@@ -336,21 +314,21 @@ mod tests {
         assert_eq!(handshake.get_peer_id(), peer_id);
     }
 
-    #[test]
-    fn bitfield_check() {
-        assert!(!Message::check_piece(vec![0xff, 0xff], 16));
-        assert!(Message::check_piece(vec![0x00, 0x80], 8) );
-        assert!(!Message::check_piece(vec![0xff, 0xfe], 15));
-    }
+    //     #[test]
+    //     fn bitfield_check() {
+    //         assert!(!Message::check_piece(vec![0xff, 0xff], 16));
+    //         assert!(Message::check_piece(vec![0x00, 0x80], 8) );
+    //         assert!(!Message::check_piece(vec![0xff, 0xfe], 15));
+    //     }
 
-    #[test]
-    fn bitfield_set() {
-        let mut bitfield = vec![0x7f, 0xfe, 0x00];
-        Message::set_bitfield(&mut bitfield, 0);
-        assert_eq!(bitfield[0], 0xff);
-        Message::set_bitfield(&mut bitfield, 15);
-        assert_eq!(bitfield[1], 0xff);
-        Message::set_bitfield(&mut bitfield, 22);
-        assert_eq!(bitfield[2], 0x02);
-    }
+    //     #[test]
+    //     fn bitfield_set() {
+    //         let mut bitfield = vec![0x7f, 0xfe, 0x00];
+    //         Message::set_bitfield(&mut bitfield, 0);
+    //         assert_eq!(bitfield[0], 0xff);
+    //         Message::set_bitfield(&mut bitfield, 15);
+    //         assert_eq!(bitfield[1], 0xff);
+    //         Message::set_bitfield(&mut bitfield, 22);
+    //         assert_eq!(bitfield[2], 0x02);
+    //     }
 }

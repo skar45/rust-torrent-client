@@ -2,7 +2,7 @@ pub mod torrent_info {
     pub use bendy::decoding::{Error, FromBencode, Object, ResultExt};
     use sha1_smol::Sha1;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct TorrentMetadata {
         pub pieces: Vec<u8>,
         pub piece_length: i32,
@@ -10,14 +10,14 @@ pub mod torrent_info {
         pub name: String,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct TorrentInfo {
         pub announce: String,
         pub comment: String,
         pub creation_date: i32,
         pub created_by: String,
         pub url_list: Vec<String>,
-        pub info: TorrentMetadata,
+        pub info_data: TorrentMetadata,
         pub info_hash: Vec<u8>,
     }
 
@@ -89,7 +89,7 @@ pub mod torrent_info {
             let mut creation_date = None;
             let mut created_by = None;
             let mut url_list = None;
-            let mut info = None;
+            let mut info_data = None;
             let mut info_hash = None;
 
             let mut dict = object.try_into_dictionary()?;
@@ -118,7 +118,7 @@ pub mod torrent_info {
                     }
                     (b"url-list", value) => {
                         url_list = Vec::<String>::decode_bencode_object(value)
-                            .context("creation date")
+                            .context("url list")
                             .map(Some)?;
                     }
                     (b"info", value) => {
@@ -130,9 +130,8 @@ pub mod torrent_info {
                         let mut hasher = Sha1::new();
                         hasher.update(info_bytes);
                         info_hash = Some(hasher.digest().bytes().to_vec());
-                        // info_hash = Some(hasher.digest().bytes());
 
-                        info = TorrentMetadata::from_bencode(info_bytes)
+                        info_data = TorrentMetadata::from_bencode(info_bytes)
                             .context("info")
                             .map(Some)?;
                     }
@@ -149,7 +148,7 @@ pub mod torrent_info {
                 creation_date.ok_or_else(|| Error::missing_field("creation date"))?;
             let created_by = created_by.ok_or_else(|| Error::missing_field("created by"))?;
             let url_list = url_list.ok_or_else(|| Error::missing_field("url list"))?;
-            let info = info.ok_or_else(|| Error::missing_field("info"))?;
+            let info_data = info_data.ok_or_else(|| Error::missing_field("info"))?;
             let info_hash = info_hash.ok_or_else(|| Error::missing_field("info"))?;
 
             Ok(TorrentInfo {
@@ -158,7 +157,7 @@ pub mod torrent_info {
                 creation_date,
                 created_by,
                 url_list,
-                info,
+                info_data,
                 info_hash,
             })
         }

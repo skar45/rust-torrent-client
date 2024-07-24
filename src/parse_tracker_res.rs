@@ -1,7 +1,7 @@
 pub mod peers {
     pub use bendy::decoding::{Error, FromBencode, Object, ResultExt};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Peer {
         pub ip: String,
         pub port: i32,
