@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::{
     parse_torrent::torrent_info::TorrentInfo,
     parse_tracker_res::peers::{Peer, PeerList},
@@ -28,16 +30,16 @@ struct PeerState {
     is_choked: bool,
     client_interested: bool,
     client_choked: bool,
-    peer_info: Peer,
+    peer_info: Peer
 }
 
-struct TorrentQueue {
+struct TorrentState {
     bitfield: Vec<u8>,
     info: TorrentInfo,
-    peer_state: Vec<PeerState>,
+    peer_state: Vec<PeerState>
 }
 
-impl TorrentQueue {
+impl TorrentState {
     pub fn new(info: TorrentInfo, peer_list: &PeerList) -> Self {
         let peer_state: Vec<PeerState> = peer_list
             .peers
@@ -58,7 +60,7 @@ impl TorrentQueue {
             bitfield.push(0x00);
         }
 
-        TorrentQueue {
+        TorrentState {
             bitfield,
             info: info.clone(),
             peer_state,
@@ -85,7 +87,21 @@ impl TorrentQueue {
             *v = *v | (0x1 << shift);
         };
     }
+
 }
+
+#[tokio::main]
+pub async fn create_queue(mut state: TorrentState) {
+    let total_pieces: usize = state.bitfield.len() * 8;
+    let shared_state = Arc::new(Mutex::new(state));
+
+    for i in 0..(total_pieces - 1) {
+        tokio::spawn(async move {
+
+        })
+    }
+ }
+
 
 #[cfg(test)]
 mod tests {
@@ -116,7 +132,7 @@ mod tests {
             info_hash: vec![],
         };
 
-        let mut torrent_queue: TorrentQueue = TorrentQueue::new(torrent_info, &peerlist);
+        let mut torrent_queue: TorrentState = TorrentState::new(torrent_info, &peerlist);
 
         torrent_queue.set_bitfield(0);
         assert_eq!(torrent_queue.bitfield[0], 0x80);

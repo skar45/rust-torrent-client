@@ -258,6 +258,7 @@ pub mod tracker {
         ]);
 
         let url = format!("{url}{query}");
+        println!("url: {}", url);
         let response = &client.get(url).send().await?.bytes().await?;
 
         Ok(response.to_vec())

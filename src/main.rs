@@ -45,8 +45,6 @@ fn main() {
     let rt = Runtime::new().unwrap();
     let tracker_res = rt.block_on(request).unwrap();
     let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
-    println!("peers: {:#?}", peer_list);
-    println!("tracker response: {:#?}", torrent_info);
     println!(
         "tracker response: {}",
         torrent_info.info_data.length / torrent_info.info_data.piece_length
