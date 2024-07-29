@@ -10,6 +10,7 @@ use bendy::decoding::FromBencode;
 use clap::Parser;
 use connect_tracker::tracker::AnnounceURL;
 use parse_torrent::torrent_info;
+use queue::{create_queue, TorrentState};
 use rand::{self, distributions::Alphanumeric, thread_rng, Rng};
 use tokio::runtime::Runtime;
 
@@ -41,7 +42,7 @@ fn main() {
         torrent_info.info_data.length,
     );
 
-    let request = tracker::get_data(&mut req_data, &torrent_info.info_hash);
+    let request = tracker::fetch_tracker_data(&mut req_data, &torrent_info.info_hash);
     let rt = Runtime::new().unwrap();
     let tracker_res = rt.block_on(request).unwrap();
     let peer_list = PeerList::from_bencode(&tracker_res).unwrap();
@@ -49,6 +50,9 @@ fn main() {
         "tracker response: {}",
         torrent_info.info_data.length / torrent_info.info_data.piece_length
     );
+    let torrent_state = TorrentState::new(torrent_info, &peer_list);
+    rt.block_on(create_queue(torrent_state, client_id));
+    
     //     let handshake_msg =
     //         tracker::Handshake::new(torrent_info.info_hash.clone(), &client_id).serialize();
     //     let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &peer_list);

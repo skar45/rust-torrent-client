@@ -1,7 +1,7 @@
 pub mod tracker {
     use reqwest::{self};
     pub use std::fmt::Display;
-    use std::{borrow::Borrow, error::Error, u8, vec};
+    use std::{borrow::Borrow, error::Error, str::from_utf8, u8, vec};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
@@ -52,6 +52,7 @@ pub mod tracker {
         }
     }
 
+    #[derive(Debug)]
     enum MessageId {
         KeepAlive,
         Choke,
@@ -100,6 +101,7 @@ pub mod tracker {
         }
     }
 
+    #[derive(Debug)]
     pub struct Message {
         length: u32,
         id: Option<MessageId>,
@@ -158,11 +160,11 @@ pub mod tracker {
     #[derive(Debug)]
     pub struct Handshake {
         // length of the pstr, always 0x13
-        pstrlen: String,
+        pstrlen: usize,
         // name of the protocol: `BitTorrent protocol`
         pstr: String,
         // 8 empty bytes
-        reserved_bytes: String,
+        reserved_bytes: Vec<u8>,
         info_hash: Vec<u8>,
         peer_id: String,
     }
@@ -170,46 +172,37 @@ pub mod tracker {
     impl Handshake {
         pub fn new(info_hash: Vec<u8>, peer_id: &str) -> Self {
             Handshake {
-                pstrlen: String::from("0x13"),
+                pstrlen: 0x13,
                 pstr: String::from("BitTorrent protocol"),
-                reserved_bytes: String::from("0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00"),
+                reserved_bytes: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 info_hash,
                 peer_id: String::from(peer_id),
             }
         }
 
-        pub fn serialize(&self) -> String {
-            let mut hash_string = String::from("");
-            for b in &self.info_hash {
-                hash_string.push_str(&format!("\\{:#04x}", b));
-            }
-            let handshake_message = format!(
-                "\\{}{}\\{}{}{}",
-                self.pstrlen, self.pstr, self.reserved_bytes, hash_string, self.peer_id
-            );
-            return handshake_message;
+        // handshake: <pstrlen><pstr><reserved><info_hash><peer_id>
+        pub fn serialize(&self) -> Vec<u8> {
+            let mut s_bytes: Vec<u8> = vec![];
+            s_bytes.reserve_exact(49 + self.pstrlen);
+            s_bytes.push(self.pstrlen as u8);
+            s_bytes.append(&mut self.pstr.as_bytes().to_vec());
+            s_bytes.append(&mut self.reserved_bytes.clone());
+            s_bytes.append(&mut self.info_hash.clone());
+            s_bytes.append(&mut self.peer_id.as_bytes().to_vec());
+            return s_bytes;
         }
 
-        pub fn deserialize(message: &str) -> Result<Self, Box<dyn Error>> {
-            let mut id_hash = message
-                .split("x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00");
-            let id_hash = id_hash
-                .nth(1)
-                .expect("Could not parse info hash and peer id from message.");
-            let mut hash = vec![];
-            for c in id_hash[..(id_hash.len() - 20)].split("\\") {
-                if c.len() < 4 {
-                    continue;
-                };
-                let hex_str = u8::from_str_radix(&c[2..4], 16);
-                match hex_str {
-                    Ok(v) => hash.push(v),
-                    Err(e) => println!("Could not parse hex string: {}", c),
+        pub fn deserialize(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+            let hash = message.get((message.len() - 40)..(message.len() - 20));
+            let peer_id = message.get((message.len() - 20)..message.len());
+
+            if let Some(h) = hash {
+                if let Some(p_id) = peer_id {
+                    let handshake = Handshake::new(h.to_vec(), from_utf8(p_id).unwrap());
+                    return Ok(handshake);
                 }
             }
-            let peer_id = &id_hash[(id_hash.len() - 20)..];
-
-            Ok(Handshake::new(hash, peer_id))
+            panic!("Error parsing handshake!");
         }
 
         pub fn get_hash(&self) -> &Vec<u8> {
@@ -240,7 +233,7 @@ pub mod tracker {
     /**
      * Connect to the tracker and get metadata
      */
-    pub async fn get_data(
+    pub async fn fetch_tracker_data(
         request: &mut AnnounceURL,
         hash: &Vec<u8>,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -264,22 +257,40 @@ pub mod tracker {
         Ok(response.to_vec())
     }
 
-    pub async fn connect_to_peer(
-        handshake_message: &str,
-        peer_list: &PeerList,
+    pub async fn handshake_with_peer(
+        handshake_message: &Handshake,
+        ip: &str,
+        port: i32,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
-        for p in peer_list.peers.iter() {
-            if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", p.ip, p.port)).await {
-                println!("Connected to ip: {}", p.ip);
-                stream
-                    .write_all(handshake_message.as_bytes())
-                    .await
-                    .expect("Could not send message!");
+        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)).await {
+            println!("Connected to ip: {}", ip);
+            stream
+                .write_all(&handshake_message.serialize())
+                .await
+                .expect("Could not send message!");
 
-                let mut buffer = Vec::new();
-                let m = stream.read_to_end(&mut buffer).await;
-                return Ok(buffer[..m.expect("Could not read response!")].to_vec());
-            }
+            let mut buffer = Vec::new();
+            let m = stream.read_to_end(&mut buffer).await;
+            return Ok(buffer[..m.expect("Could not read response!")].to_vec());
+        }
+        panic!("Could not connect to peer");
+    }
+
+    pub async fn send_messsage_to_peer(
+        message: &Message,
+        ip: &str,
+        port: i32,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)).await {
+            println!("Connected to ip: {}", ip);
+            stream
+                .write_all(&message.byte_serialize())
+                .await
+                .expect("Could not send message!");
+
+            let mut buffer = Vec::new();
+            let m = stream.read_to_end(&mut buffer).await;
+            return Ok(buffer[..m.expect("Could not read response!")].to_vec());
         }
         panic!("Could not connect to peer");
     }
@@ -291,45 +302,31 @@ mod tests {
     use tracker::Handshake;
     use tracker::Message;
 
-    const PAYLOAD: &str = "\\0x13BitTorrent protocol\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0x00\\0xff\\0x0c\\0x2d\\0x00\\0x01\\0x02\\0x03\\0x0a\\0x09\\0x15\\0x4e\\0x7b\\0xe7\\0x22\\0x7a\\0x63\\0x38\\0x64\\0xff\\0x22-TR2940-k8hj0wgej6ch";
-    const PEER_ID: &str = "-TR2940-k8hj0wgej6ch";
-
     #[test]
     fn message_serialize() {
-        let peer_id = PEER_ID;
-        let message = Handshake::new(
+        let peer_id = "-TR2940-k8hj0wgej6ch";
+        let mut payload: Vec<u8> = vec![0x13];
+        payload.append(&mut "BitTorrent protocol".as_bytes().to_vec());
+        payload.append(&mut [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0].to_vec());
+        payload.append(
+            &mut [
+                255, 12, 45, 0, 1, 2, 3, 10, 9, 21, 78, 123, 231, 34, 122, 99, 56, 100, 255, 34,
+            ]
+            .to_vec(),
+        );
+        payload.append(&mut peer_id.as_bytes().to_vec());
+        let handshake = Handshake::new(
             vec![
                 255, 12, 45, 0, 1, 2, 3, 10, 9, 21, 78, 123, 231, 34, 122, 99, 56, 100, 255, 34,
             ],
             peer_id,
-        )
-        .serialize();
-        let handshake = Handshake::deserialize(&message);
-        assert_eq!(message, PAYLOAD);
+        );
+        assert_eq!(handshake.serialize(), payload);
+        assert_eq!(
+            Handshake::deserialize(handshake.serialize())
+                .unwrap()
+                .serialize(),
+            payload
+        );
     }
-
-    #[test]
-    fn message_deserialize() {
-        let peer_id = PEER_ID;
-        let handshake = Handshake::deserialize(PAYLOAD).unwrap();
-        assert_eq!(handshake.get_peer_id(), peer_id);
-    }
-
-    //     #[test]
-    //     fn bitfield_check() {
-    //         assert!(!Message::check_piece(vec![0xff, 0xff], 16));
-    //         assert!(Message::check_piece(vec![0x00, 0x80], 8) );
-    //         assert!(!Message::check_piece(vec![0xff, 0xfe], 15));
-    //     }
-
-    //     #[test]
-    //     fn bitfield_set() {
-    //         let mut bitfield = vec![0x7f, 0xfe, 0x00];
-    //         Message::set_bitfield(&mut bitfield, 0);
-    //         assert_eq!(bitfield[0], 0xff);
-    //         Message::set_bitfield(&mut bitfield, 15);
-    //         assert_eq!(bitfield[1], 0xff);
-    //         Message::set_bitfield(&mut bitfield, 22);
-    //         assert_eq!(bitfield[2], 0x02);
-    //     }
 }

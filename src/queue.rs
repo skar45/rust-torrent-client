@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
+    connect_tracker::tracker::{self, Handshake},
     parse_torrent::torrent_info::TorrentInfo,
     parse_tracker_res::peers::{Peer, PeerList},
 };
@@ -30,13 +31,13 @@ struct PeerState {
     is_choked: bool,
     client_interested: bool,
     client_choked: bool,
-    peer_info: Peer
+    peer_info: Peer,
 }
 
-struct TorrentState {
+pub struct TorrentState {
     bitfield: Vec<u8>,
     info: TorrentInfo,
-    peer_state: Vec<PeerState>
+    peers: Vec<PeerState>,
 }
 
 impl TorrentState {
@@ -63,7 +64,7 @@ impl TorrentState {
         TorrentState {
             bitfield,
             info: info.clone(),
-            peer_state,
+            peers: peer_state,
         }
     }
 
@@ -80,7 +81,7 @@ impl TorrentState {
         };
     }
 
-    pub fn set_bitfield(&mut self, index: usize) {
+    pub fn set_bitfield_on(&mut self, index: usize) {
         let byte_index = index / 8;
         let shift = 7 - (index % 8);
         if let Some(v) = self.bitfield.get_mut(byte_index) {
@@ -88,20 +89,68 @@ impl TorrentState {
         };
     }
 
+    pub fn set_bitfield_off(&mut self, index: usize) {
+        let byte_index = index / 8;
+        let shift = 7 - (index % 8);
+        if let Some(v) = self.bitfield.get_mut(byte_index) {
+            *v = *v & !(0x1 << shift);
+        };
+    }
+
+    pub fn get_next_required_piece(&self) -> Option<usize> {
+        for (i, byte) in self.bitfield.iter().enumerate() {
+            if *byte == 0xff {
+                continue;
+            };
+            for offset in 7..0 {
+                if (*byte >> offset) & 0x1 == 0x0 {
+                    return Some((i * 8) + (7 - offset));
+                }
+            }
+        }
+        return None;
+    }
 }
 
-#[tokio::main]
-pub async fn create_queue(mut state: TorrentState) {
-    let total_pieces: usize = state.bitfield.len() * 8;
-    let shared_state = Arc::new(Mutex::new(state));
+pub struct SharedTorrentState {
+    mutex: Arc<Mutex<TorrentState>>
+}
 
-    for i in 0..(total_pieces - 1) {
-        tokio::spawn(async move {
-
-        })
+impl SharedTorrentState {
+    pub fn new(state: TorrentState) -> Self {
+        SharedTorrentState { mutex: Arc::new(Mutex::new(state)) }
     }
- }
 
+    pub fn get_handshake_payload(&self, peer_index: usize, peer_id: String) -> Option<(Handshake, i32, String)> {
+            let lock = &self.mutex.lock().unwrap();
+            let peer = lock.peers.get(peer_index);
+            if let Some(p) = peer {
+                let ip = p.peer_info.ip.clone();
+                let port = p.peer_info.port;
+                let handshake = Handshake::new(lock.info.info_hash.clone(), &peer_id);
+                 Some((handshake, port, ip));
+            };
+            None
+    }
+}
+
+pub async fn create_queue(state: TorrentState, client_id: String) {
+    let total_peers: usize = state.peers.len();
+    let shared_state = SharedTorrentState::new(state);
+
+    for i in 0..(total_peers - 1) {
+        let hpi = shared_state.get_handshake_payload(i, client_id.clone());
+        tokio::spawn(async move {
+            if let Some((handshake, port, ip)) = hpi {
+                println!("yooo");
+                let res = tracker::handshake_with_peer(&handshake, &ip, port).await;
+                println!("yooo");
+                let parsed_res = tracker::Message::read(res.unwrap());
+                println!("parsed res {:?}", parsed_res.unwrap());
+            }
+        });
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -134,13 +183,13 @@ mod tests {
 
         let mut torrent_queue: TorrentState = TorrentState::new(torrent_info, &peerlist);
 
-        torrent_queue.set_bitfield(0);
+        torrent_queue.set_bitfield_on(0);
         assert_eq!(torrent_queue.bitfield[0], 0x80);
         assert!(torrent_queue.check_piece(0));
-        torrent_queue.set_bitfield(15);
+        torrent_queue.set_bitfield_on(15);
         assert_eq!(torrent_queue.bitfield[1], 0x01);
         assert!(torrent_queue.check_piece(15));
-        torrent_queue.set_bitfield(22);
+        torrent_queue.set_bitfield_on(22);
         assert_eq!(torrent_queue.bitfield[2], 0x02);
         assert!(!torrent_queue.check_piece(23));
     }
