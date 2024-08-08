@@ -3,12 +3,14 @@ mod parse_torrent;
 mod parse_tracker_res;
 mod queue;
 
+use std::str::from_utf8;
+
 use crate::connect_tracker::tracker;
 use crate::parse_torrent::torrent_info::TorrentInfo;
 use crate::parse_tracker_res::peers::PeerList;
 use bendy::decoding::FromBencode;
 use clap::Parser;
-use connect_tracker::tracker::AnnounceURL;
+use connect_tracker::tracker::{AnnounceURL, Handshake, Message, PeerConnection};
 use parse_torrent::torrent_info;
 use queue::{create_queue, TorrentState};
 use rand::{self, distributions::Alphanumeric, thread_rng, Rng};
@@ -50,9 +52,20 @@ fn main() {
         "tracker response: {}",
         torrent_info.info_data.length / torrent_info.info_data.piece_length
     );
-    let torrent_state = TorrentState::new(torrent_info, &peer_list);
-    rt.block_on(create_queue(torrent_state, client_id));
-    
+    // let torrent_state = TorrentState::new(torrent_info, &peer_list);
+    let mut peer_connection = rt.block_on(PeerConnection::new(peer_list.peers[1].ip.clone(), peer_list.peers[1].port)).unwrap();
+    let mut listener = rt.block_on(PeerConnection::listen()).unwrap();
+    let handshake = Handshake::new(torrent_info.info_hash , &client_id);
+    let handshake_req = peer_connection.handshake_with_peer(&handshake);
+    rt.block_on(handshake_req).unwrap();
+    loop {
+        let read_stream = peer_connection.read_from_stream();
+        let response = rt.block_on(read_stream);
+        println!("handhshake res: {:?}", response);
+        if response.len() > 0 { break };
+    }
+    // rt.block_on(create_queue(torrent_state, client_id));
+    //
     //     let handshake_msg =
     //         tracker::Handshake::new(torrent_info.info_hash.clone(), &client_id).serialize();
     //     let connect_to_tracker = tracker::connect_to_peer(&handshake_msg, &peer_list);

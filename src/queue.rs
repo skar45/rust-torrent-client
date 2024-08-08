@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    connect_tracker::tracker::{self, Handshake},
+    connect_tracker::tracker::{self, Handshake, PeerConnection},
     parse_torrent::torrent_info::TorrentInfo,
     parse_tracker_res::peers::{Peer, PeerList},
 };
@@ -113,41 +113,52 @@ impl TorrentState {
 }
 
 pub struct SharedTorrentState {
-    mutex: Arc<Mutex<TorrentState>>
+    mutex: Mutex<TorrentState>,
 }
 
 impl SharedTorrentState {
     pub fn new(state: TorrentState) -> Self {
-        SharedTorrentState { mutex: Arc::new(Mutex::new(state)) }
+        SharedTorrentState { mutex: Mutex::new(state)}
     }
 
-    pub fn get_handshake_payload(&self, peer_index: usize, peer_id: String) -> Option<(Handshake, i32, String)> {
-            let lock = &self.mutex.lock().unwrap();
-            let peer = lock.peers.get(peer_index);
-            if let Some(p) = peer {
-                let ip = p.peer_info.ip.clone();
-                let port = p.peer_info.port;
-                let handshake = Handshake::new(lock.info.info_hash.clone(), &peer_id);
-                 Some((handshake, port, ip));
-            };
-            None
+    pub fn get_handshake(&self, client_id: &str, peer_index: usize) -> Handshake {
+        let lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        let handshake = Handshake::new(lock.info.info_hash.clone(), client_id);
+        return handshake;
+    }
+
+    pub fn get_ip_port(&self, peer_index: usize) -> (String, i32) {
+        let lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        let peer = &lock.peers[peer_index];
+        return (peer.peer_info.ip.clone(), peer.peer_info.port);
+    }
+
+    pub fn get_required_piece(&self) -> Option<usize> {
+        let lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        return lock.get_next_required_piece();
     }
 }
 
 pub async fn create_queue(state: TorrentState, client_id: String) {
     let total_peers: usize = state.peers.len();
-    let shared_state = SharedTorrentState::new(state);
+    let connections: usize = if total_peers < 100 { total_peers } else { 100 };
+    println!("total connections: {}", connections);
+    let state = Arc::new(SharedTorrentState::new(state));
 
-    for i in 0..(total_peers - 1) {
-        let hpi = shared_state.get_handshake_payload(i, client_id.clone());
+    for i in 0..(connections - 1) {
+        let shared_state = state.clone();
+        let shared_id = client_id.clone();
         tokio::spawn(async move {
-            if let Some((handshake, port, ip)) = hpi {
-                println!("yooo");
-                let res = tracker::handshake_with_peer(&handshake, &ip, port).await;
-                println!("yooo");
-                let parsed_res = tracker::Message::read(res.unwrap());
-                println!("parsed res {:?}", parsed_res.unwrap());
-            }
+                let handshake = shared_state.get_handshake(&shared_id, i);
+                let (ip, port) = shared_state.get_ip_port(i);
+                let mut peer_connection = PeerConnection::new(ip, port).await.unwrap();
+                peer_connection.handshake_with_peer(&handshake).await;
+                let piece_index = shared_state.get_required_piece();
+//                 let parsed_res = tracker::Message::read(res.unwrap());
+//                 match parsed_res.unwrap().id {
+//                     Some(id) => println!("recieved message {:?} from ip: {}", id, ip),
+//                     None => println!("did not recieve message")
+//                 }
         });
     }
 }

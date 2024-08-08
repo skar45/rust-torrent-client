@@ -4,13 +4,13 @@ pub mod tracker {
     use std::{borrow::Borrow, error::Error, str::from_utf8, u8, vec};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpStream,
+        net::{TcpStream, TcpListener},
     };
     use url::form_urlencoded::byte_serialize;
 
     use crate::parse_tracker_res::peers::PeerList;
 
-    const LISTENING_PORT: i32 = 8000;
+    const LISTENING_PORT: i32 = 6800;
 
     enum Event {
         Started,
@@ -53,7 +53,7 @@ pub mod tracker {
     }
 
     #[derive(Debug)]
-    enum MessageId {
+    pub enum MessageId {
         KeepAlive,
         Choke,
         Unchoke,
@@ -103,9 +103,9 @@ pub mod tracker {
 
     #[derive(Debug)]
     pub struct Message {
-        length: u32,
-        id: Option<MessageId>,
-        payload: Option<Vec<u8>>,
+        pub length: u32,
+        pub id: Option<MessageId>,
+        pub payload: Option<Vec<u8>>,
     }
 
     impl Message {
@@ -145,7 +145,7 @@ pub mod tracker {
                 .try_into()
                 .unwrap_or_else(|_| panic!("Message doesn't have the 5th byte!"));
             if message.len() < (length as usize + 5) {
-                panic!("Message length is less than the encoded length: {}", length);
+                panic!("Message length {} is less than the encoded length: {}", message.len(), length);
             }
             let payload = message[5..length as usize].to_vec();
 
@@ -164,9 +164,9 @@ pub mod tracker {
         // name of the protocol: `BitTorrent protocol`
         pstr: String,
         // 8 empty bytes
-        reserved_bytes: Vec<u8>,
-        info_hash: Vec<u8>,
-        peer_id: String,
+        pub reserved_bytes: Vec<u8>,
+        pub info_hash: Vec<u8>,
+        pub peer_id: String,
     }
 
     impl Handshake {
@@ -230,6 +230,10 @@ pub mod tracker {
         query_string
     }
 
+    pub async fn listen()  {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", LISTENING_PORT)).await.expect("Port may be in use!");
+    }
+
     /**
      * Connect to the tracker and get metadata
      */
@@ -257,43 +261,57 @@ pub mod tracker {
         Ok(response.to_vec())
     }
 
-    pub async fn handshake_with_peer(
-        handshake_message: &Handshake,
-        ip: &str,
+    pub struct PeerConnection {
+        ip: String,
         port: i32,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)).await {
-            println!("Connected to ip: {}", ip);
-            stream
+        stream: TcpStream
+    }
+
+    impl PeerConnection {
+        pub async fn listen() -> Result<TcpListener, std::io::Error> {
+            TcpListener::bind(format!("127.0.0.1:{}",LISTENING_PORT)).await
+        }
+
+        pub async fn new(ip: String, port: i32) -> Result<Self, Box<dyn Error>> {
+            println!("yooooo {} {}!", ip, port);
+            let stream = TcpStream::connect(format!("{}:{}", ip, port)).await;
+
+            match stream {
+                Ok(s) => Ok(PeerConnection { ip, port, stream: s }),
+                Err(e) => Err(Box::new(e)) 
+            }
+
+        }
+
+        pub async fn handshake_with_peer(
+            &mut self,
+            handshake_message: &Handshake,
+        ) -> Result<(), Box<dyn Error>> {
+            self.stream
                 .write_all(&handshake_message.serialize())
                 .await
                 .expect("Could not send message!");
-
-            let mut buffer = Vec::new();
-            let m = stream.read_to_end(&mut buffer).await;
-            return Ok(buffer[..m.expect("Could not read response!")].to_vec());
+            Ok(())
         }
-        panic!("Could not connect to peer");
+
+        pub async fn send_messsage_to_peer(
+            &mut self,
+            message: &Message,
+        ) -> Result<(), Box<dyn Error>> {
+                self.stream
+                    .write_all(&message.byte_serialize())
+                    .await
+                    .expect("Could not send message!");
+            Ok(())
+        }
+
+        pub async fn read_from_stream(&mut self) -> Vec<u8> {
+                let mut buffer = Vec::new();
+                let m = self.stream.read_to_end(&mut buffer).await;
+                return buffer[..m.expect("Could not read response!")].to_vec();
+        }
     }
 
-    pub async fn send_messsage_to_peer(
-        message: &Message,
-        ip: &str,
-        port: i32,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        if let Ok(mut stream) = TcpStream::connect(format!("{}:{}", ip, port)).await {
-            println!("Connected to ip: {}", ip);
-            stream
-                .write_all(&message.byte_serialize())
-                .await
-                .expect("Could not send message!");
-
-            let mut buffer = Vec::new();
-            let m = stream.read_to_end(&mut buffer).await;
-            return Ok(buffer[..m.expect("Could not read response!")].to_vec());
-        }
-        panic!("Could not connect to peer");
-    }
 }
 
 #[cfg(test)]
