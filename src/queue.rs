@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::{future::{self, Future}, sync::{Arc, Mutex}};
+
+use tokio::sync::futures;
 
 use crate::{
     connect_tracker::tracker::{self, Handshake, PeerConnection},
@@ -118,7 +120,9 @@ pub struct SharedTorrentState {
 
 impl SharedTorrentState {
     pub fn new(state: TorrentState) -> Self {
-        SharedTorrentState { mutex: Mutex::new(state)}
+        SharedTorrentState {
+            mutex: Mutex::new(state),
+        }
     }
 
     pub fn get_handshake(&self, client_id: &str, peer_index: usize) -> Handshake {
@@ -139,27 +143,49 @@ impl SharedTorrentState {
     }
 }
 
-pub async fn create_queue(state: TorrentState, client_id: String) {
+pub async fn start_download(state: TorrentState, client_id: String) {
     let total_peers: usize = state.peers.len();
     let connections: usize = if total_peers < 100 { total_peers } else { 100 };
     println!("total connections: {}", connections);
     let state = Arc::new(SharedTorrentState::new(state));
 
+    let mut threads = vec![];
     for i in 0..(connections - 1) {
         let shared_state = state.clone();
         let shared_id = client_id.clone();
-        tokio::spawn(async move {
-                let handshake = shared_state.get_handshake(&shared_id, i);
-                let (ip, port) = shared_state.get_ip_port(i);
-                let mut peer_connection = PeerConnection::new(ip, port).await.unwrap();
-                peer_connection.handshake_with_peer(&handshake).await;
-                let piece_index = shared_state.get_required_piece();
-//                 let parsed_res = tracker::Message::read(res.unwrap());
-//                 match parsed_res.unwrap().id {
-//                     Some(id) => println!("recieved message {:?} from ip: {}", id, ip),
-//                     None => println!("did not recieve message")
-//                 }
+        let thread = tokio::spawn(async move {
+            let handshake = shared_state.get_handshake(&shared_id, i);
+            let (ip, port) = shared_state.get_ip_port(i);
+            let mut peer_connection = match PeerConnection::new(ip, port).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    eprint!("Could not connect {}", e);
+                    return
+                }
+            };
+            if let Err(e) = peer_connection.handshake_with_peer(&handshake).await {
+                    eprint!("Could not send handshake {}", e);
+                    return
+            };
+            if let Err(e) = peer_connection.handshake_with_peer(&handshake).await {
+                    eprint!("Could not send handshake {}", e);
+                    return
+            };
+            let response = peer_connection.read_from_stream().await;
+            println!("response: {:?}", response);
+            let response = peer_connection.read_from_stream().await;
+            println!("response2: {:?}", response);
+            loop {
+                if let Some(peice_index) = shared_state.get_required_piece() {
+                    println!("piece index: {}", peice_index);
+                };
+            }
         });
+        threads.push(thread);
+    }
+
+    for t in threads {
+        t.await.unwrap_err().is_cancelled();
     }
 }
 

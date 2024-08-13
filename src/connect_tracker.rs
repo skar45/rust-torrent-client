@@ -4,7 +4,7 @@ pub mod tracker {
     use std::{borrow::Borrow, error::Error, str::from_utf8, u8, vec};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpStream, TcpListener},
+        net::{TcpListener, TcpStream},
     };
     use url::form_urlencoded::byte_serialize;
 
@@ -145,7 +145,11 @@ pub mod tracker {
                 .try_into()
                 .unwrap_or_else(|_| panic!("Message doesn't have the 5th byte!"));
             if message.len() < (length as usize + 5) {
-                panic!("Message length {} is less than the encoded length: {}", message.len(), length);
+                panic!(
+                    "Message length {} is less than the encoded length: {}",
+                    message.len(),
+                    length
+                );
             }
             let payload = message[5..length as usize].to_vec();
 
@@ -160,7 +164,7 @@ pub mod tracker {
     #[derive(Debug)]
     pub struct Handshake {
         // length of the pstr, always 0x13
-        pstrlen: usize,
+        pstrlen: String,
         // name of the protocol: `BitTorrent protocol`
         pstr: String,
         // 8 empty bytes
@@ -172,7 +176,7 @@ pub mod tracker {
     impl Handshake {
         pub fn new(info_hash: Vec<u8>, peer_id: &str) -> Self {
             Handshake {
-                pstrlen: 0x13,
+                pstrlen: String::from("19"),
                 pstr: String::from("BitTorrent protocol"),
                 reserved_bytes: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 info_hash,
@@ -183,8 +187,8 @@ pub mod tracker {
         // handshake: <pstrlen><pstr><reserved><info_hash><peer_id>
         pub fn serialize(&self) -> Vec<u8> {
             let mut s_bytes: Vec<u8> = vec![];
-            s_bytes.reserve_exact(49 + self.pstrlen);
-            s_bytes.push(self.pstrlen as u8);
+            s_bytes.reserve_exact(69);
+            s_bytes.append(&mut self.pstrlen.as_bytes().to_vec());
             s_bytes.append(&mut self.pstr.as_bytes().to_vec());
             s_bytes.append(&mut self.reserved_bytes.clone());
             s_bytes.append(&mut self.info_hash.clone());
@@ -230,8 +234,10 @@ pub mod tracker {
         query_string
     }
 
-    pub async fn listen()  {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", LISTENING_PORT)).await.expect("Port may be in use!");
+    pub async fn listen() {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", LISTENING_PORT))
+            .await
+            .expect("Port may be in use!");
     }
 
     /**
@@ -264,33 +270,38 @@ pub mod tracker {
     pub struct PeerConnection {
         ip: String,
         port: i32,
-        stream: TcpStream
+        stream: TcpStream,
     }
 
     impl PeerConnection {
         pub async fn listen() -> Result<TcpListener, std::io::Error> {
-            TcpListener::bind(format!("127.0.0.1:{}",LISTENING_PORT)).await
+            TcpListener::bind(format!("127.0.0.1:{}", LISTENING_PORT)).await
         }
 
         pub async fn new(ip: String, port: i32) -> Result<Self, Box<dyn Error>> {
-            println!("yooooo {} {}!", ip, port);
             let stream = TcpStream::connect(format!("{}:{}", ip, port)).await;
+            println!("new connection {} {}!", ip, port);
 
             match stream {
-                Ok(s) => Ok(PeerConnection { ip, port, stream: s }),
-                Err(e) => Err(Box::new(e)) 
+                Ok(s) => Ok(PeerConnection {
+                    ip,
+                    port,
+                    stream: s,
+                }),
+                Err(e) => Err(Box::new(e)),
             }
-
         }
 
         pub async fn handshake_with_peer(
             &mut self,
             handshake_message: &Handshake,
         ) -> Result<(), Box<dyn Error>> {
+            println!("handshake with peer!");
             self.stream
                 .write_all(&handshake_message.serialize())
                 .await
                 .expect("Could not send message!");
+            self.stream.flush().await?;
             Ok(())
         }
 
@@ -298,20 +309,19 @@ pub mod tracker {
             &mut self,
             message: &Message,
         ) -> Result<(), Box<dyn Error>> {
-                self.stream
-                    .write_all(&message.byte_serialize())
-                    .await
-                    .expect("Could not send message!");
+            self.stream
+                .write_all(&message.byte_serialize())
+                .await
+                .expect("Could not send message!");
             Ok(())
         }
 
         pub async fn read_from_stream(&mut self) -> Vec<u8> {
-                let mut buffer = Vec::new();
-                let m = self.stream.read_to_end(&mut buffer).await;
-                return buffer[..m.expect("Could not read response!")].to_vec();
+            let mut buffer = Vec::new();
+            let m = self.stream.read_to_end(&mut buffer).await;
+            return buffer[..m.expect("Could not read response!")].to_vec();
         }
     }
-
 }
 
 #[cfg(test)]
