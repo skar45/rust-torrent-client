@@ -1,9 +1,10 @@
+use core::panicking::panic;
 use std::{future::{self, Future}, sync::{Arc, Mutex}};
 
 use tokio::sync::futures;
 
 use crate::{
-    connect_tracker::tracker::{self, Handshake, PeerConnection},
+    connect_tracker::tracker::{self, Handshake, Message, MessageId, PeerConnection},
     parse_torrent::torrent_info::TorrentInfo,
     parse_tracker_res::peers::{Peer, PeerList},
 };
@@ -31,8 +32,8 @@ use crate::{
 struct PeerState {
     is_interested: bool,
     is_choked: bool,
-    client_interested: bool,
-    client_choked: bool,
+    peer_interested: bool,
+    peer_choked: bool,
     peer_info: Peer,
 }
 
@@ -49,9 +50,9 @@ impl TorrentState {
             .iter()
             .map(|p| PeerState {
                 is_interested: false,
-                is_choked: false,
-                client_choked: false,
-                client_interested: true,
+                is_choked: true,
+                peer_choked: false,
+                peer_interested: true,
                 peer_info: p.clone(),
             })
             .collect();
@@ -141,6 +142,11 @@ impl SharedTorrentState {
         let lock = self.mutex.lock().expect("Error unable to lock mutex!");
         return lock.get_next_required_piece();
     }
+
+    pub fn set_choke(&self, status: bool, peer_index: usize,) {
+        let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        lock.peers[peer_index].is_choked = status;
+    }
 }
 
 pub async fn start_download(state: TorrentState, client_id: String) {
@@ -151,11 +157,11 @@ pub async fn start_download(state: TorrentState, client_id: String) {
 
     let mut threads = vec![];
     for i in 0..(connections - 1) {
-        let shared_state = state.clone();
+        let state = state.clone();
         let shared_id = client_id.clone();
         let thread = tokio::spawn(async move {
-            let handshake = shared_state.get_handshake(&shared_id, i);
-            let (ip, port) = shared_state.get_ip_port(i);
+            let handshake = state.get_handshake(&shared_id, i);
+            let (ip, port) = state.get_ip_port(i);
             let mut peer_connection = match PeerConnection::new(ip, port).await {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -167,16 +173,44 @@ pub async fn start_download(state: TorrentState, client_id: String) {
                     eprint!("Could not send handshake {}", e);
                     return
             };
-            if let Err(e) = peer_connection.handshake_with_peer(&handshake).await {
-                    eprint!("Could not send handshake {}", e);
-                    return
-            };
-            let response = peer_connection.read_from_stream().await;
-            println!("response: {:?}", response);
-            let response = peer_connection.read_from_stream().await;
-            println!("response2: {:?}", response);
+
             loop {
-                if let Some(peice_index) = shared_state.get_required_piece() {
+                let response = peer_connection.read_from_stream().await;
+
+                if response.len() > 0 {
+                    // Handshake, Bitfield, Unchoke
+                    if response.len() == 272 {
+                        match Handshake::deserialize(&response[0..68]) {
+                            Ok(h) => {
+                                let given_hash = h.get_hash();
+                                for i in 0..given_hash.len()  {
+                                    if given_hash[i] != handshake.get_hash()[i] {
+                                        println!("Hashes don't match!");
+                                        return
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                panic!("Error desializing handshake!")
+                            }
+                        }
+
+                        let bitfield_msg = Message::read(&response[68..response.len()-5]);
+                        let choke_msg = Message::read(&response[response.len()-5..]);
+
+                        if let Ok(msg) = choke_msg {
+                            if let Some(id) = msg.id {
+                                if id == MessageId::Unchoke {
+                                    state.set_choke(false, i);
+                                } else if id == MessageId::Choke {
+                                    state.set_choke(true, i);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(peice_index) = state.get_required_piece() {
                     println!("piece index: {}", peice_index);
                 };
             }

@@ -58,9 +58,9 @@ pub mod torrent_info {
                             .map(Some)?;
                     }
                     _ => {
-                        return Err(bendy::decoding::Error::unexpected_field(
+                        println!(
                             "[TorrentMetadata]: excessive fields",
-                        ))
+                        );
                     }
                 }
             }
@@ -136,9 +136,9 @@ pub mod torrent_info {
                             .map(Some)?;
                     }
                     _ => {
-                        return Err(bendy::decoding::Error::unexpected_field(
+                        println!(
                             "[TorrentInfo]: excessive fields",
-                        ))
+                        );
                     }
                 }
             }

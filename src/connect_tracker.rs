@@ -53,6 +53,7 @@ pub mod tracker {
     }
 
     #[derive(Debug)]
+    #[derive(PartialEq)]
     pub enum MessageId {
         KeepAlive,
         Choke,
@@ -89,7 +90,6 @@ pub mod tracker {
                 MessageId::Choke => 0,
                 MessageId::Unchoke => 1,
                 MessageId::Interested => 2,
-                MessageId::Interested => 3,
                 MessageId::Have => 5,
                 MessageId::Bitfield => 6,
                 MessageId::Request => 7,
@@ -135,7 +135,7 @@ pub mod tracker {
             }
         }
 
-        pub fn read(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
+        pub fn read(message: &[u8]) -> Result<Self, Box<dyn Error>> {
             let length = u32::from_be_bytes(
                 message[0..4]
                     .try_into()
@@ -144,13 +144,6 @@ pub mod tracker {
             let id = u8::from(message[5])
                 .try_into()
                 .unwrap_or_else(|_| panic!("Message doesn't have the 5th byte!"));
-            if message.len() < (length as usize + 5) {
-                panic!(
-                    "Message length {} is less than the encoded length: {}",
-                    message.len(),
-                    length
-                );
-            }
             let payload = message[5..length as usize].to_vec();
 
             Ok(Message {
@@ -164,7 +157,7 @@ pub mod tracker {
     #[derive(Debug)]
     pub struct Handshake {
         // length of the pstr, always 0x13
-        pstrlen: String,
+        pstrlen: u8,
         // name of the protocol: `BitTorrent protocol`
         pstr: String,
         // 8 empty bytes
@@ -176,7 +169,7 @@ pub mod tracker {
     impl Handshake {
         pub fn new(info_hash: Vec<u8>, peer_id: &str) -> Self {
             Handshake {
-                pstrlen: String::from("19"),
+                pstrlen: 0x13,
                 pstr: String::from("BitTorrent protocol"),
                 reserved_bytes: vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                 info_hash,
@@ -187,8 +180,8 @@ pub mod tracker {
         // handshake: <pstrlen><pstr><reserved><info_hash><peer_id>
         pub fn serialize(&self) -> Vec<u8> {
             let mut s_bytes: Vec<u8> = vec![];
-            s_bytes.reserve_exact(69);
-            s_bytes.append(&mut self.pstrlen.as_bytes().to_vec());
+            s_bytes.reserve_exact(68);
+            s_bytes.push(self.pstrlen);
             s_bytes.append(&mut self.pstr.as_bytes().to_vec());
             s_bytes.append(&mut self.reserved_bytes.clone());
             s_bytes.append(&mut self.info_hash.clone());
@@ -196,9 +189,9 @@ pub mod tracker {
             return s_bytes;
         }
 
-        pub fn deserialize(message: Vec<u8>) -> Result<Self, Box<dyn Error>> {
-            let hash = message.get((message.len() - 40)..(message.len() - 20));
-            let peer_id = message.get((message.len() - 20)..message.len());
+        pub fn deserialize(message: &[u8]) -> Result<Self, Box<dyn Error>> {
+            let hash = message.get(28..48);
+            let peer_id = message.get(48..68);
 
             if let Some(h) = hash {
                 if let Some(p_id) = peer_id {
@@ -296,7 +289,7 @@ pub mod tracker {
             &mut self,
             handshake_message: &Handshake,
         ) -> Result<(), Box<dyn Error>> {
-            println!("handshake with peer!");
+            println!("handshake with peer: {:?}!", &handshake_message.serialize());
             self.stream
                 .write_all(&handshake_message.serialize())
                 .await

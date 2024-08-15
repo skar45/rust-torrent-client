@@ -10,7 +10,7 @@ use bendy::decoding::FromBencode;
 use clap::Parser;
 use connect_tracker::tracker::AnnounceURL;
 use queue::TorrentState;
-use rand::{self, distributions::Alphanumeric, thread_rng, Rng};
+use rand::{self, distributions::{Alphanumeric, Uniform}, thread_rng, Rng};
 
 // TODO
 // - [ ] Multifile support
@@ -29,11 +29,19 @@ async fn main() {
     let file = std::fs::read(args.torrent).expect("could not read file");
     let torrent_info = TorrentInfo::from_bencode(&file).unwrap();
 
-    let client_id: String = thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(20)
-        .map(char::from)
+    let mut client_id = String::from("-aU0000-");
+    let rand_num: String = thread_rng()
+        .sample_iter(Uniform::from(0..9))
+        .take(12)
+        .map(|v| {
+            match char::from_digit(v as u32, 10) {
+                Some(num) => num,
+                None => '0'
+            }
+        })
         .collect();
+    client_id.push_str(&rand_num);
+    println!("Client id: {} ", client_id);
 
     let mut req_data = AnnounceURL::new(
         torrent_info.announce.clone(),
