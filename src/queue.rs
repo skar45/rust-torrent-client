@@ -1,10 +1,7 @@
-use core::panicking::panic;
-use std::{future::{self, Future}, sync::{Arc, Mutex}};
-
-use tokio::sync::futures;
+use std::sync::{Arc, Mutex};
 
 use crate::{
-    connect_tracker::tracker::{self, Handshake, Message, MessageId, PeerConnection},
+    connect_tracker::tracker::{Handshake, Message, MessageId, PeerConnection},
     parse_torrent::torrent_info::TorrentInfo,
     parse_tracker_res::peers::{Peer, PeerList},
 };
@@ -64,6 +61,14 @@ impl TorrentState {
             bitfield.push(0x00);
         }
 
+        println!(
+            "{}, {}, {}, {}",
+            bitfield.len(),
+            bitfield_len,
+            info.info_data.length,
+            info.info_data.piece_length
+        );
+
         TorrentState {
             bitfield,
             info: info.clone(),
@@ -71,6 +76,24 @@ impl TorrentState {
         }
     }
 
+    /// Check if peer bitfield has the required piece
+    pub fn check_peer_bitfield(&self, bitfield: &[u8]) -> bool {
+        if let Some(index) = self.get_next_required_piece_index() {
+            let byte_index = index / 8;
+            let shift = 7 - (index % 8);
+            match bitfield.get(byte_index) {
+                Some(v) => {
+                    return ((*v >> shift) & 0x1) != 0;
+                }
+                None => {
+                    return false;
+                }
+            };
+        };
+        false
+    }
+
+    /// Check if the stored bitfield is on for the given index
     pub fn check_piece(&self, index: usize) -> bool {
         let byte_index = index / 8;
         let shift = 7 - (index % 8);
@@ -84,6 +107,7 @@ impl TorrentState {
         };
     }
 
+    /// Set the bitfield on at the given index
     pub fn set_bitfield_on(&mut self, index: usize) {
         let byte_index = index / 8;
         let shift = 7 - (index % 8);
@@ -92,6 +116,7 @@ impl TorrentState {
         };
     }
 
+    /// Set the bitfield of at the given index
     pub fn set_bitfield_off(&mut self, index: usize) {
         let byte_index = index / 8;
         let shift = 7 - (index % 8);
@@ -100,7 +125,9 @@ impl TorrentState {
         };
     }
 
-    pub fn get_next_required_piece(&self) -> Option<usize> {
+    /// Get the first index of the bitfield that is off in a sequence
+    /// Note: We want to download the pieces sequentially so the download speed will be slower
+    pub fn get_next_required_piece_index(&self) -> Option<usize> {
         for (i, byte) in self.bitfield.iter().enumerate() {
             if *byte == 0xff {
                 continue;
@@ -126,7 +153,7 @@ impl SharedTorrentState {
         }
     }
 
-    pub fn get_handshake(&self, client_id: &str, peer_index: usize) -> Handshake {
+    pub fn get_handshake(&self, client_id: &str) -> Handshake {
         let lock = self.mutex.lock().expect("Error unable to lock mutex!");
         let handshake = Handshake::new(lock.info.info_hash.clone(), client_id);
         return handshake;
@@ -135,17 +162,27 @@ impl SharedTorrentState {
     pub fn get_ip_port(&self, peer_index: usize) -> (String, i32) {
         let lock = self.mutex.lock().expect("Error unable to lock mutex!");
         let peer = &lock.peers[peer_index];
-        return (peer.peer_info.ip.clone(), peer.peer_info.port);
+        (peer.peer_info.ip.clone(), peer.peer_info.port)
     }
 
     pub fn get_required_piece(&self) -> Option<usize> {
         let lock = self.mutex.lock().expect("Error unable to lock mutex!");
-        return lock.get_next_required_piece();
+        lock.get_next_required_piece_index()
     }
 
-    pub fn set_choke(&self, status: bool, peer_index: usize,) {
+    pub fn set_choke(&self, status: bool, peer_index: usize) {
         let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
         lock.peers[peer_index].is_choked = status;
+    }
+
+    pub fn set_peer_interested(&self, status: bool, peer_index: usize) {
+        let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        lock.peers[peer_index].is_interested = status;
+    }
+
+    pub fn check_peer_bitfield(&self, bitfield: &[u8]) -> bool {
+        let lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        lock.check_peer_bitfield(bitfield)
     }
 }
 
@@ -160,59 +197,104 @@ pub async fn start_download(state: TorrentState, client_id: String) {
         let state = state.clone();
         let shared_id = client_id.clone();
         let thread = tokio::spawn(async move {
-            let handshake = state.get_handshake(&shared_id, i);
+            let handshake = state.get_handshake(&shared_id);
             let (ip, port) = state.get_ip_port(i);
-            let mut peer_connection = match PeerConnection::new(ip, port).await {
+            let mut connection = match PeerConnection::new(ip, port).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     eprint!("Could not connect {}", e);
-                    return
+                    return;
                 }
             };
-            if let Err(e) = peer_connection.handshake_with_peer(&handshake).await {
-                    eprint!("Could not send handshake {}", e);
-                    return
+            if let Err(e) = connection.handshake_with_peer(&handshake).await {
+                eprint!("Could not send handshake {}", e);
+                return;
             };
 
             loop {
-                let response = peer_connection.read_from_stream().await;
+                let response = connection.read_from_stream().await;
+                let mut new_msg: Option<Message> = None;
 
                 if response.len() > 0 {
                     // Handshake, Bitfield, Unchoke
-                    if response.len() == 272 {
+                    if response.len() >= 68 {
                         match Handshake::deserialize(&response[0..68]) {
                             Ok(h) => {
                                 let given_hash = h.get_hash();
-                                for i in 0..given_hash.len()  {
+                                for i in 0..given_hash.len() {
                                     if given_hash[i] != handshake.get_hash()[i] {
                                         println!("Hashes don't match!");
-                                        return
+                                        return;
                                     }
                                 }
-                            },
-                            Err(e) => {
+                            }
+                            Err(_) => {
                                 panic!("Error desializing handshake!")
                             }
                         }
 
-                        let bitfield_msg = Message::read(&response[68..response.len()-5]);
-                        let choke_msg = Message::read(&response[response.len()-5..]);
+                        // TODO: refactor this
+                        if response.len() > 68 {
+                            let bitfield_msg = Message::read(&response[68..response.len() - 5]);
+                            let choke_msg = Message::read(&response[response.len() - 5..]);
 
-                        if let Ok(msg) = choke_msg {
-                            if let Some(id) = msg.id {
-                                if id == MessageId::Unchoke {
-                                    state.set_choke(false, i);
-                                } else if id == MessageId::Choke {
-                                    state.set_choke(true, i);
+                            if let Ok(msg) = choke_msg {
+                                if let Some(id) = msg.id {
+                                    if id == MessageId::Unchoke {
+                                        state.set_choke(false, i);
+                                    } else if id == MessageId::Choke {
+                                        state.set_choke(true, i);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        if let Ok(msg) = Message::read(&response) {
+                            if let Some(msg_id) = msg.id {
+                                match msg_id {
+                                    MessageId::Choke => {
+                                        state.set_choke(true, i);
+                                    }
+                                    MessageId::Unchoke => {
+                                        state.set_choke(false, i);
+                                    }
+                                    MessageId::Interested => {
+                                        state.set_peer_interested(true, i);
+                                    }
+                                    MessageId::NotInterested => {
+                                        state.set_peer_interested(false, i);
+                                    }
+                                    MessageId::Have => {
+                                        println!("Seeding has yet to be implemented");
+                                    }
+                                    MessageId::Bitfield => {
+                                        if let Some(bitfield) = msg.payload {
+                                            if !state.check_peer_bitfield(&bitfield) {
+                                                continue;
+                                            } else {
+                                                 new_msg = Some(Message {
+                                                    length: 1,
+                                                    id: Some(MessageId::Interested),
+                                                    payload: None
+                                                });
+                                            }
+                                        }
+                                    },
+                                    _ => {
+                                        println!("Message unsupported!");
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                if let Some(peice_index) = state.get_required_piece() {
-                    println!("piece index: {}", peice_index);
-                };
+                if let Some(m) = new_msg {
+                    if let Err(e) = connection.send_messsage_to_peer(&m).await {
+                        eprintln!("Unable to send payload! {}", e);
+                        continue
+                    };
+                }
             }
         });
         threads.push(thread);
@@ -263,5 +345,8 @@ mod tests {
         torrent_queue.set_bitfield_on(22);
         assert_eq!(torrent_queue.bitfield[2], 0x02);
         assert!(!torrent_queue.check_piece(23));
+        assert_eq!(torrent_queue.get_next_required_piece_index(), Some(1));
+        torrent_queue.set_bitfield_on(1);
+        assert_eq!(torrent_queue.get_next_required_piece_index(), Some(2));
     }
 }

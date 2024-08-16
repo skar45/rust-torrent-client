@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 mod connect_tracker;
 mod parse_torrent;
 mod parse_tracker_res;
@@ -10,13 +11,17 @@ use bendy::decoding::FromBencode;
 use clap::Parser;
 use connect_tracker::tracker::AnnounceURL;
 use queue::TorrentState;
-use rand::{self, distributions::{Alphanumeric, Uniform}, thread_rng, Rng};
+use rand::{
+    self,
+    distributions::{Alphanumeric, Uniform},
+    thread_rng, Rng,
+};
 
-// TODO
-// - [ ] Multifile support
-// - [ ] Save state locally
-// - [ ] Methods to control which pieces to download
-// - [ ] Custom bencode parsing
+/// TODO
+/// - [ ] Multifile support
+/// - [ ] Save state locally
+/// - [ ] Methods to control which pieces to download
+/// - [ ] Custom bencode parsing
 
 #[derive(Parser)]
 struct Cli {
@@ -33,11 +38,9 @@ async fn main() {
     let rand_num: String = thread_rng()
         .sample_iter(Uniform::from(0..9))
         .take(12)
-        .map(|v| {
-            match char::from_digit(v as u32, 10) {
-                Some(num) => num,
-                None => '0'
-            }
+        .map(|v| match char::from_digit(v as u32, 10) {
+            Some(num) => num,
+            None => '0',
         })
         .collect();
     client_id.push_str(&rand_num);

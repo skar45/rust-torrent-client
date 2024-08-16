@@ -58,9 +58,7 @@ pub mod torrent_info {
                             .map(Some)?;
                     }
                     _ => {
-                        println!(
-                            "[TorrentMetadata]: excessive fields",
-                        );
+                        println!("[TorrentMetadata]: excessive fields",);
                     }
                 }
             }
@@ -136,9 +134,7 @@ pub mod torrent_info {
                             .map(Some)?;
                     }
                     _ => {
-                        println!(
-                            "[TorrentInfo]: excessive fields",
-                        );
+                        println!("[TorrentInfo]: excessive fields",);
                     }
                 }
             }

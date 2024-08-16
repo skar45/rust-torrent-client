@@ -52,8 +52,7 @@ pub mod tracker {
         }
     }
 
-    #[derive(Debug)]
-    #[derive(PartialEq)]
+    #[derive(Debug, PartialEq)]
     pub enum MessageId {
         KeepAlive,
         Choke,
@@ -109,10 +108,8 @@ pub mod tracker {
     }
 
     impl Message {
-        /**
-         * Serialize message into bit pattern: <length><id><payload>.
-         * Length must be big endian.
-         */
+        /// Serialize message into bit pattern: <length><id><payload>.
+        /// Length must be big endian.
         pub fn byte_serialize(&self) -> Vec<u8> {
             match &self.id {
                 None => return vec![0x00, 0x00],
