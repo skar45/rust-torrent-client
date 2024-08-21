@@ -27,10 +27,10 @@ use crate::{
 // - If a request is received, send piece if the piece exists
 
 struct PeerState {
-    is_interested: bool,
-    is_choked: bool,
+    am_interested: bool,
+    am_choking: bool,
     peer_interested: bool,
-    peer_choked: bool,
+    peer_choking: bool,
     peer_info: Peer,
 }
 
@@ -46,9 +46,9 @@ impl TorrentState {
             .peers
             .iter()
             .map(|p| PeerState {
-                is_interested: false,
-                is_choked: true,
-                peer_choked: false,
+                am_interested: false,
+                am_choking: true,
+                peer_choking: false,
                 peer_interested: true,
                 peer_info: p.clone(),
             })
@@ -57,17 +57,9 @@ impl TorrentState {
         let bitfield_len: usize =
             (info.info_data.length / info.info_data.piece_length / 8) as usize;
         let mut bitfield: Vec<u8> = Vec::with_capacity(bitfield_len);
-        for i in 0..bitfield_len {
+        for _ in 0..bitfield_len {
             bitfield.push(0x00);
         }
-
-        println!(
-            "{}, {}, {}, {}",
-            bitfield.len(),
-            bitfield_len,
-            info.info_data.length,
-            info.info_data.piece_length
-        );
 
         TorrentState {
             bitfield,
@@ -107,8 +99,9 @@ impl TorrentState {
         };
     }
 
-    /// Set the bitfield on at the given index
-    pub fn set_bitfield_on(&mut self, index: usize) {
+    /// Set the bitfield on at the given index for a given length
+    pub fn set_bitfield_on(&mut self, index: usize, length: usize) {
+        let payload = 0x1 << length;
         let byte_index = index / 8;
         let shift = 7 - (index % 8);
         if let Some(v) = self.bitfield.get_mut(byte_index) {
@@ -132,9 +125,9 @@ impl TorrentState {
             if *byte == 0xff {
                 continue;
             };
-            for offset in 7..0 {
-                if (*byte >> offset) & 0x1 == 0x0 {
-                    return Some((i * 8) + (7 - offset));
+            for j in 0..8 {
+                if (*byte >> (7 - j)) & 0x1 == 0x0 {
+                    return Some((i * 8) + (j));
                 }
             }
         }
@@ -172,12 +165,17 @@ impl SharedTorrentState {
 
     pub fn set_choke(&self, status: bool, peer_index: usize) {
         let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
-        lock.peers[peer_index].is_choked = status;
+        lock.peers[peer_index].am_choking = status;
+    }
+
+    pub fn set_am_interested(&self, status: bool, peer_index: usize) {
+        let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
+        lock.peers[peer_index].am_interested = status;
     }
 
     pub fn set_peer_interested(&self, status: bool, peer_index: usize) {
         let mut lock = self.mutex.lock().expect("Error unable to lock mutex!");
-        lock.peers[peer_index].is_interested = status;
+        lock.peers[peer_index].peer_interested = status;
     }
 
     pub fn check_peer_bitfield(&self, bitfield: &[u8]) -> bool {
@@ -247,6 +245,11 @@ pub async fn start_download(state: TorrentState, client_id: String) {
                                     }
                                 }
                             }
+                            if let Ok(msg) = bitfield_msg {
+                                if let Some(bitfield) = msg.payload {
+                                    if !state.check_peer_bitfield(&bitfield) { continue };
+                                }
+                            }
                         }
                     } else {
                         if let Ok(msg) = Message::read(&response) {
@@ -257,6 +260,11 @@ pub async fn start_download(state: TorrentState, client_id: String) {
                                     }
                                     MessageId::Unchoke => {
                                         state.set_choke(false, i);
+                                        new_msg = Some(Message {
+                                            length: 1,
+                                            id: Some(MessageId::Interested),
+                                            payload: None
+                                        })
                                     }
                                     MessageId::Interested => {
                                         state.set_peer_interested(true, i);
@@ -272,6 +280,7 @@ pub async fn start_download(state: TorrentState, client_id: String) {
                                             if !state.check_peer_bitfield(&bitfield) {
                                                 continue;
                                             } else {
+                                                state.set_am_interested(true, i);
                                                  new_msg = Some(Message {
                                                     length: 1,
                                                     id: Some(MessageId::Interested),
@@ -279,6 +288,8 @@ pub async fn start_download(state: TorrentState, client_id: String) {
                                                 });
                                             }
                                         }
+                                    },
+                                    MessageId::Piece => {
                                     },
                                     _ => {
                                         println!("Message unsupported!");

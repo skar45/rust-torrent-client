@@ -341,7 +341,7 @@ mod tests {
         );
         assert_eq!(handshake.serialize(), payload);
         assert_eq!(
-            Handshake::deserialize(handshake.serialize())
+            Handshake::deserialize(&handshake.serialize())
                 .unwrap()
                 .serialize(),
             payload
