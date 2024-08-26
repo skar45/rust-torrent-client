@@ -1,4 +1,7 @@
-use std::{cmp, sync::{Arc, Mutex}};
+use std::{
+    cmp,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     connect_tracker::tracker::{Handshake, Message, MessageId, PeerConnection},
@@ -109,21 +112,43 @@ impl TorrentState {
 
     /// Set the bitfield on at the given index for a given length
     pub fn set_bitfield_on(&mut self, index: usize, length: usize) {
+        let get_ceil = |x: usize| if x % 8 != 0 { (x / 8) + 1 } else { x / 8 };
         let byte_index = index / 8;
-        let bitfield_len = self.bitfield.len();
-        for (i, byte) in self.bitfield[byte_index..].iter_mut().enumerate() {
+        let byte_len = get_ceil(length + index);
+        println!(
+            "before bf: {:?}, index: {}, length: {}, byte_length: {} byte_index: {}",
+            self.bitfield, index, length, byte_len, byte_index
+        );
+        for (i, byte) in self.bitfield[byte_index..byte_len].iter_mut().enumerate() {
             if i == 0 {
-                let shift = 8 - cmp::min(8, length - (index % 8));
-                let payload = !0x0 % (u32::pow(2, cmp::min(8, length as u32)));
+                let payload_index = index % 8;
+                let payload_len = cmp::min(8 - payload_index, length);
+                let shift = 8 - (payload_len + payload_index);
+                let payload = !0x0 % (u32::pow(2, payload_len as u32));
                 *byte = *byte | (payload << shift) as u8;
-            } else if i != (bitfield_len - 1) {
+                println!(
+                    "0 value: payload: {} shift: {} payload_len: {} payload_index: {}",
+                    payload, shift, payload_len, payload_index
+                );
+            } else if i != (byte_len - byte_index - 1) {
+                println!("yoooo");
                 *byte = 0xff;
             } else {
-                let shift = 8 - cmp::min(8, length - (index % 8));
-                let payload = !0x0 % (u32::pow(2, cmp::min(8, length as u32)));
+                let payload_len = if (length + index) % 8 == 0 {
+                    8
+                } else {
+                    (length + index) % 8
+                };
+                let shift = 8 - payload_len;
+                let payload = !0x0 % (u32::pow(2, payload_len as u32));
                 *byte = *byte | (payload << shift) as u8;
+                println!(
+                    "end value: payload {} shift {} payload len {}",
+                    payload, shift, payload_len
+                );
             }
         }
+        println!("after bf: {:?}", self.bitfield);
     }
 
     /// Set the bitfield of at the given index
@@ -358,39 +383,66 @@ mod tests {
 
     #[test]
     fn bitfield_set() {
-        let peerlist = PeerList {
-            interval: 0,
-            peers: vec![],
+        let create_state = || -> TorrentState {
+            let t_metadata = TorrentMetadata {
+                pieces: vec![],
+                piece_length: 2,
+                length: 48,
+                name: String::from(""),
+            };
+            TorrentState::new(
+                TorrentInfo {
+                    announce: String::from(""),
+                    comment: String::from(""),
+                    creation_date: 0,
+                    created_by: String::from(""),
+                    url_list: vec![],
+                    info_data: t_metadata,
+                    info_hash: vec![],
+                },
+                &PeerList {
+                    interval: 0,
+                    peers: vec![],
+                },
+            )
         };
+        let mut torrent_state = create_state();
+        let mut torrent_state2 = create_state();
+        let mut torrent_state3 = create_state();
+        let mut torrent_state4 = create_state();
+        let mut torrent_state5 = create_state();
+        let mut torrent_state6 = create_state();
 
-        let t_metadata = TorrentMetadata {
-            pieces: vec![],
-            piece_length: 2,
-            length: 48,
-            name: String::from(""),
-        };
-
-        let torrent_info = TorrentInfo {
-            announce: String::from(""),
-            comment: String::from(""),
-            creation_date: 0,
-            created_by: String::from(""),
-            url_list: vec![],
-            info_data: t_metadata,
-            info_hash: vec![],
-        };
-
-        let mut torrent_queue: TorrentState = TorrentState::new(torrent_info, &peerlist);
-
-        torrent_queue.set_bitfield_on(0, 8);
-        assert_eq!(torrent_queue.bitfield[0], 0xff);
-        assert!(torrent_queue.check_piece(0));
-        torrent_queue.set_bitfield_on(11, 4);
-        assert_eq!(torrent_queue.bitfield[1], 0x0f);
-        assert!(torrent_queue.check_piece(15));
-        torrent_queue.set_bitfield_on(22, 1);
-        assert_eq!(torrent_queue.bitfield[2], 0x02);
-        assert!(!torrent_queue.check_piece(23));
+        torrent_state.set_bitfield_on(1, 16);
+        assert_eq!(torrent_state.bitfield[0], 0x7f);
+        assert_eq!(torrent_state.bitfield[1], 0xff);
+        assert_eq!(torrent_state.bitfield[2], 0x80);
+        torrent_state2.set_bitfield_on(2, 4);
+        assert_eq!(torrent_state2.bitfield[0], 0x3c);
+        assert_eq!(torrent_state2.bitfield[1], 0x00);
+        assert_eq!(torrent_state2.bitfield[2], 0x00);
+        torrent_state3.set_bitfield_on(9, 15);
+        assert_eq!(torrent_state3.bitfield[0], 0x00);
+        assert_eq!(torrent_state3.bitfield[1], 0x7f);
+        assert_eq!(torrent_state3.bitfield[2], 0xff);
+        torrent_state4.set_bitfield_on(12, 4);
+        assert_eq!(torrent_state4.bitfield[0], 0x00);
+        assert_eq!(torrent_state4.bitfield[1], 0x0f);
+        assert_eq!(torrent_state4.bitfield[2], 0x00);
+        torrent_state5.set_bitfield_on(18, 6);
+        assert_eq!(torrent_state5.bitfield[0], 0x00);
+        assert_eq!(torrent_state5.bitfield[1], 0x00);
+        assert_eq!(torrent_state5.bitfield[2], 0x3f);
+        torrent_state6.set_bitfield_on(0, 24);
+        assert_eq!(torrent_state6.bitfield[0], 0xff);
+        assert_eq!(torrent_state6.bitfield[1], 0xff);
+        assert_eq!(torrent_state6.bitfield[2], 0xff);
+        // torrent_queue.set_bitfield_on(22, 1);
+        // assert_eq!(torrent_queue.bitfield[2], 0x02);
+        // assert!(!torrent_queue.check_piece(23));
+        // torrent_queue.set_bitfield_on(8, 9);
+        // assert_eq!(torrent_queue.bitfield[2], 0x80);
+        // assert!(!torrent_queue.check_piece(23));
         // assert_eq!(torrent_queue.get_next_required_piece_index(), Some(1));
         // torrent_queue.set_bitfield_on(1);
         // assert_eq!(torrent_queue.get_next_required_piece_index(), Some(2));
