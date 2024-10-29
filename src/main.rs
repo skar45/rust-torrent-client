@@ -1,8 +1,9 @@
-#![warn(missing_docs)]
 mod connect_tracker;
+mod manage_file;
 mod parse_torrent;
 mod parse_tracker_res;
 mod queue;
+mod errors;
 
 use crate::connect_tracker::tracker;
 use crate::parse_torrent::torrent_info::TorrentInfo;
@@ -11,11 +12,7 @@ use bendy::decoding::FromBencode;
 use clap::Parser;
 use connect_tracker::tracker::AnnounceURL;
 use queue::TorrentState;
-use rand::{
-    self,
-    distributions::{Alphanumeric, Uniform},
-    thread_rng, Rng,
-};
+use rand::{self, distributions::Uniform, thread_rng, Rng};
 
 /// TODO
 /// - [ ] Multifile support

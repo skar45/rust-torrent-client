@@ -1,14 +1,16 @@
 pub mod tracker {
     use reqwest::{self};
     pub use std::fmt::Display;
-    use std::{borrow::Borrow, error::Error, str::from_utf8, u8, vec};
+    use std::{borrow::Borrow, error::Error, str::from_utf8, time::Duration, u8, vec};
     use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
+        io::{AsyncReadExt, AsyncWriteExt, Interest},
         net::{TcpListener, TcpStream},
     };
     use url::form_urlencoded::byte_serialize;
 
-    use crate::parse_tracker_res::peers::PeerList;
+    use crate::errors::torrent_error::NetworkError;
+
+
 
     const LISTENING_PORT: i32 = 6800;
 
@@ -133,20 +135,26 @@ pub mod tracker {
         }
 
         pub fn read(message: &[u8]) -> Result<Self, Box<dyn Error>> {
+            println!("reading message: {:?}", message);
+            let (int_bytes, _) = message.split_at(std::mem::size_of::<u32>());
             let length = u32::from_be_bytes(
-                message[0..4]
+                int_bytes
                     .try_into()
                     .unwrap_or_else(|_| panic!("Message is less than 4 bytes!")),
             );
-            let id = u8::from(message[5])
+            let id = u8::from(message[4])
                 .try_into()
                 .unwrap_or_else(|_| panic!("Message doesn't have the 5th byte!"));
-            let payload = message[5..length as usize].to_vec();
+            let payload = if length > 0 {
+                Some(message[5..(length + 5) as usize].to_vec())
+            } else {
+                None
+            };
 
             Ok(Message {
                 length,
                 id: Some(MessageId::get_id(id)),
-                payload: Some(payload),
+                payload,
             })
         }
     }
@@ -187,6 +195,7 @@ pub mod tracker {
         }
 
         pub fn deserialize(message: &[u8]) -> Result<Self, Box<dyn Error>> {
+            println!("Deserializing message length: {}", message.len());
             let hash = message.get(28..48);
             let peer_id = message.get(48..68);
 
@@ -260,7 +269,7 @@ pub mod tracker {
     pub struct PeerConnection {
         ip: String,
         port: i32,
-        stream: TcpStream,
+        pub stream: TcpStream,
     }
 
     impl PeerConnection {
@@ -268,18 +277,34 @@ pub mod tracker {
             TcpListener::bind(format!("127.0.0.1:{}", LISTENING_PORT)).await
         }
 
-        pub async fn new(ip: String, port: i32) -> Result<Self, Box<dyn Error>> {
-            let stream = TcpStream::connect(format!("{}:{}", ip, port)).await;
+        pub async fn new(ip: String, port: i32, retries: usize) -> Result<Self, Box<dyn Error>> {
             println!("new connection {} {}!", ip, port);
+            let ts = std::time::Instant::now();
+            let mut attempts = 0;
+            let mut delay = Duration::from_secs(1);
 
-            match stream {
-                Ok(s) => Ok(PeerConnection {
-                    ip,
-                    port,
-                    stream: s,
-                }),
-                Err(e) => Err(Box::new(e)),
+            while attempts < retries {
+                attempts += 1;
+                let stream = TcpStream::connect(format!("{}:{}", ip, port)).await;
+                match stream {
+                    Ok(s) => {
+                        let ts_elapsed = std::time::Instant::now().duration_since(ts);
+                        println!("Took: {} seconds!", ts_elapsed.as_secs());
+                        s.set_nodelay(false)?;
+                        return Ok(PeerConnection {
+                            ip,
+                            port,
+                            stream: s,
+                        });
+                    }
+                    Err(_) => {
+                        println!("Trying to reconnect {}:{}", ip, port);
+                        if attempts != 1 { tokio::time::sleep(delay).await };
+                        delay *= 2;
+                    }
+                }
             }
+            panic!("Unable to connect to {}:{}", ip, port);
         }
 
         pub async fn handshake_with_peer(
@@ -292,6 +317,7 @@ pub mod tracker {
                 .await
                 .expect("Could not send message!");
             self.stream.flush().await?;
+            println!("Finished sending handshake!");
             Ok(())
         }
 
@@ -299,17 +325,41 @@ pub mod tracker {
             &mut self,
             message: &Message,
         ) -> Result<(), Box<dyn Error>> {
+            println!("Writing to stream...");
             self.stream
                 .write_all(&message.byte_serialize())
                 .await
                 .expect("Could not send message!");
+            self.stream.flush().await?;
+            println!("Finished writing!");
             Ok(())
         }
 
-        pub async fn read_from_stream(&mut self) -> Vec<u8> {
-            let mut buffer = Vec::new();
-            let m = self.stream.read_to_end(&mut buffer).await;
-            return buffer[..m.expect("Could not read response!")].to_vec();
+        pub async fn read_from_stream(&mut self) -> Result<Vec<u8>, NetworkError> {
+            let interest = self.stream.ready(Interest::READABLE).await;
+            let mut buffer: Vec<u8> = vec![0; 1024];
+            match interest {
+                Ok(ready) => {
+                    if ready.is_readable() == false {
+                        println!("Connection is not ready!");
+                        return Ok(buffer);
+                    };
+                },
+                Err(_) => return Err(NetworkError::EpollError)
+            };
+
+            let m = self.stream.read(&mut buffer).await;
+            match m {
+                Ok(0) => Err(NetworkError::ConnectionClosed),
+                Ok(n) => {
+                    if n > 0 { println!("packet size {}", n)};
+                    return Ok(buffer);
+                }
+                Err(e) => {
+                    eprintln!("Error reading from stream: {}", e);
+                    Err(NetworkError::ConnectionClosed)
+                }
+            }
         }
     }
 }
